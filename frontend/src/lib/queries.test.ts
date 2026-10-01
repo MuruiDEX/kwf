@@ -1,0 +1,38 @@
+import { describe, expect, it } from 'vitest';
+import { qk } from './queries';
+
+/** Query keys are a cache contract: changing them splits caches and causes refetch storms. */
+describe('query keys', () => {
+  it('keeps legacy keys for unfiltered lists', () => {
+    expect(qk.tournaments()).toEqual(['tournaments']);
+    expect(qk.rankings()).toEqual(['rankings']);
+    expect(qk.adminUsers()).toEqual(['admin-users']);
+  });
+  it('uses filtered tuples only when filters are set', () => {
+    expect(qk.tournaments('cup', '')).toEqual(['tournaments', 'cup', '']);
+    expect(qk.tournaments('', 'live')).toEqual(['tournaments', '', 'live']);
+    expect(qk.rankings('gender=male')).toEqual(['rankings', 'gender=male']);
+    expect(qk.adminUsers('a', 'coach')).toEqual(['admin-users', 'a', 'coach']);
+  });
+  it('scopes entity keys by id', () => {
+    expect(qk.tournament(7)).toEqual(['t', '7']);
+    expect(qk.regs(7)).toEqual(['regs', '7']);
+    expect(qk.brackets(7)).toEqual(['br', '7']);
+    expect(qk.validation(7, 'kk')).toEqual(['val', '7', 'kk']);
+    expect(qk.live(7)).toEqual(['live', '7']);
+    expect(qk.athlete(3)).toEqual(['athlete', '3']);
+    expect(qk.club(3)).toEqual(['club', '3']);
+    expect(qk.newsDetail('slug')).toEqual(['news', 'slug']);
+    expect(qk.results(7)).toEqual(['results', '7']);
+    expect(qk.report(7, 'ru')).toEqual(['report', '7', 'ru']);
+  });
+  it('keeps singleton keys stable', () => {
+    expect(qk.me).toEqual(['me']);
+    expect(qk.clubs).toEqual(['clubs']);
+    expect(qk.news).toEqual(['news']);
+    expect(qk.notes).toEqual(['notes']);
+    expect(qk.audit).toEqual(['audit']);
+    expect(qk.orgreq).toEqual(['orgreq']);
+    expect(qk.tournamentsLive).toEqual(['tournaments-live']);
+  });
+});

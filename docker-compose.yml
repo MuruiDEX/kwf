@@ -1,0 +1,26 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: kwf
+      POSTGRES_USER: kwf
+      POSTGRES_PASSWORD: kwf
+    volumes: [pgdata:/var/lib/postgresql/data]
+    ports: ["5432:5432"]
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://kwf:kwf@db:5432/kwf
+      # Demo default only. Production MUST override via env: JWT_SECRET=<32+ random chars>.
+      # Kept >=32 chars so PyJWT does not emit InsecureKeyLengthWarning; the
+      # backend still refuses known-weak secrets when ENV=prod (see config.py).
+      JWT_SECRET: ${JWT_SECRET:-dev-only-override-me-in-production-32plus}
+      CORS_ORIGINS: http://localhost:5173
+    ports: ["8000:8000"]
+    depends_on: [db]
+  frontend:
+    build: ./frontend
+    ports: ["5173:80"]
+    depends_on: [backend]
+volumes:
+  pgdata: {}
