@@ -45,16 +45,71 @@ export interface TournamentDetail extends Tournament {
   categories: Category[];
 }
 
+export type RegStatus = 'pending' | 'approved' | 'rejected' | 'withdrawn';
+
 export interface Registration {
   id: number;
   athlete_id: number;
   athlete: string;
   category_id: number;
+  category: string;
+  club_id: number | null;
+  club: string;
+  birth_year: number | null;
+  gender: Gender | null;
+  weight: number | null;
   seed: number | null;
   checked_in: boolean;
   /** Exact weight is PII: null for anonymous readers (P0). */
   weigh_in_kg: number | null;
   weigh_in_status: WeighInStatus;
+  /** Moderation status: visible to staff + owning coach, null otherwise. */
+  status: RegStatus | null;
+  review_note: string | null;
+}
+
+export interface MyAthlete {
+  id: number;
+  name: string;
+  gender: Gender;
+  birth_year: number;
+  weight: number;
+  club: string;
+}
+
+export interface MyRegistration {
+  id: number;
+  athlete_id: number;
+  tournament_id: number;
+  tournament: string;
+  date: string;
+  status: TournamentStatus | string;
+  category_id: number;
+  category: string;
+  reg_status: RegStatus;
+  review_note: string;
+  checked_in: boolean;
+  weigh_in_status: WeighInStatus;
+}
+
+export interface TatamiAssignment {
+  id: number;
+  name: string;
+  referee_id: number | null;
+  referee: string | null;
+}
+
+export interface RefereeOption {
+  id: number;
+  name: string;
+}
+
+export interface MyAssignment {
+  tatami_id: number;
+  tatami: string;
+  tournament_id: number;
+  tournament: string;
+  fights: { id: number; status: string; a: string | null; b: string | null; scheduled_at: string | null }[];
 }
 
 export interface BracketMatch {
@@ -140,6 +195,8 @@ export interface Athlete {
   wins: number;
   losses: number;
   weight: number;
+  gender: Gender;
+  birth_year: number;
 }
 
 export interface AthleteHistoryItem {
@@ -236,6 +293,40 @@ export interface ReportResponse {
   markdown: string;
 }
 
+export interface PodiumSpot {
+  id: number;
+  name: string;
+  club: string;
+}
+
+export interface Podium {
+  category_id: number;
+  category: string;
+  gold: PodiumSpot | null;
+  silver: PodiumSpot | null;
+  bronze: PodiumSpot[];
+}
+
+export interface IssuedDoc {
+  code: string;
+  kind: string;
+  athlete_id: number | null;
+  athlete: string;
+  place: string;
+  category: string;
+  template: string;
+  at: string;
+}
+
+export interface AthleteDoc {
+  code: string;
+  kind: string;
+  tournament: string;
+  date: string;
+  place: string;
+  category: string;
+}
+
 export interface DocVerify {
   valid: boolean;
   code?: string;
@@ -278,6 +369,7 @@ export interface AdminUser {
   email: string;
   full_name: string;
   role: Role;
+  roles: Role[];
   is_active: boolean;
   created_at: string;
   grants?: string[];
@@ -299,6 +391,7 @@ export interface PermissionMeta {
 export interface AdminUserDetail extends AdminUser {
   grants: string[];
   effective: string[];
+  roles: Role[];
 }
 
 export interface MyPermissions {
@@ -319,10 +412,36 @@ export interface Me {
   id: number;
   email: string;
   role: Role;
+  /** Multi-role set (primary + secondaries); absent on old responses. */
+  roles?: Role[];
   full_name: string;
 }
 
 export interface SearchResult {
   athletes: { id: number; name: string }[];
   clubs: { id: number; name: string }[];
+}
+
+export interface TrainingSession {
+  id: number;
+  club_id: number;
+  club: string;
+  title: string;
+  starts_at: string;
+  ends_at: string | null;
+  note: string;
+}
+
+export interface SpravkaField {
+  name: string;
+  label: string;
+  required: boolean;
+  source: 'auto' | 'manual';
+}
+
+export interface SpravkaTemplate {
+  key: string;
+  title: string;
+  need_tournament: boolean;
+  fields: SpravkaField[];
 }

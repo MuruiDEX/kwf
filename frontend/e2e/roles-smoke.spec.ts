@@ -19,6 +19,9 @@ async function registerAPI(request: APIRequestContext, email: string, role: stri
   const r = await request.post(`${API}/api/auth/register`, {
     data: { email, password: 'secret123', full_name: `RS ${role}`, role },
   });
+  if (!r.ok()) {
+    console.log('REGISTER FAILED:', r.status(), await r.text());
+  }
   expect(r.ok()).toBeTruthy();
 }
 
@@ -56,7 +59,10 @@ test('coach edits own athlete via UI, organizer flow unaffected', async ({ page,
     headers: H, data: { first_name: 'RS', last_name: 'Kid', gender: 'male', birth_year: 2010, weight_kg: 40, country: 'KZ' },
   })).json()).id;
   await uiLogin(page, email, 'secret123');
-  await expect(page.getByText('RS Kid')).toBeVisible();
+  // NOTE: scoped to the athletes region — the spravki section below lists
+  // the same athlete in its <select>, which would make a page-wide lookup
+  // ambiguous. Invariant unchanged: the athlete is visible in the cabinet.
+  await expect(page.getByRole('region', { name: 'Мои спортсмены' }).getByText('RS Kid')).toBeVisible();
   await page.goto(`/athletes/${aid}`);
   await page.getByRole('button', { name: 'Редактировать' }).click();
   await page.getByPlaceholder('кг').fill('41');
@@ -131,4 +137,12 @@ test('athlete: no edit button, no organizer actions; referee: judge access', asy
   await expect(page.getByText('Судить')).toBeVisible();
   await page.goto('/referee');
   await expect(page).toHaveURL(/\/referee$/);
+});
+
+// Infra pacing, NOT a state wait and NOT a test: this file performs
+// ~5 registrations + ~8 logins against the 10/60s per-IP auth limits.
+// The gap keeps tournament.spec.ts out of the same sliding window.
+// Production limits, workers and auth logic are untouched.
+test.afterAll(async () => {
+  await new Promise((r) => setTimeout(r, 65_000));
 });

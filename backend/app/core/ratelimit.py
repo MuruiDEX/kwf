@@ -16,6 +16,9 @@ RULES: list[tuple[str, int, int]] = [
     ("/api/tournaments/matches/", 120, 60),
     ("/api/tournaments", 120, 60),
     ("/api/documents/issue", 30, 60),
+    # Wave 7: certificate.pdf renders a PDF per hit (cheap QR-DoS otherwise).
+    # Placed after the specific rules above (first match wins), same budget.
+    ("/api/documents", 30, 60),
 ]
 
 _store: dict[str, deque[float]] = defaultdict(deque)

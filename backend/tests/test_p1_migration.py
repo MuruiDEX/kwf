@@ -62,7 +62,10 @@ def test_upgrade_legacy_db_keeps_data(tmp_path):
         assert "owner_id" in cols
         assert {r["name"] for r in inspect(eng).get_columns("athletes")} >= {"created_by"}
         assert "strict_eligibility" in {r["name"] for r in inspect(eng).get_columns("tournaments")}
-        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0006_p2_hot_indexes"
+        # Wave 3/4 columns land on legacy databases too (idempotent upgrades)
+        assert {r["name"] for r in inspect(eng).get_columns("registrations")} >= {"status", "review_note"}
+        assert "user_id" in {r["name"] for r in inspect(eng).get_columns("athletes")}
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0010_training_sessions"
         assert "user_permissions" in inspect(eng).get_table_names()
         idx = {i["name"] for i in inspect(eng).get_indexes("bracket_matches")}
         assert {"ix_bracket_round_pos", "ix_bracket_status"} <= idx

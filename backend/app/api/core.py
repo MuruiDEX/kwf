@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+import json
 from sqlalchemy.orm import Session
 from app.core.db import get_db, escape_like
 from app.core.deps import require_perm, get_current_user, get_optional_user, require_athlete_scope
@@ -7,7 +8,7 @@ from app.models.user import User
 from app.models.club_athlete import Athlete, Club
 from app.models.tournament import Tournament, TournamentCategory
 from app.models.competition import Registration, Bracket, BracketMatch
-from app.models.misc import News, Notification
+from app.models.misc import News, Notification, Document, AuditLog
 from app.schemas.api import AthleteIn, ClubIn, NewsIn
 
 router = APIRouter(tags=["core"])
@@ -26,8 +27,11 @@ def list_athletes(q: str = "", mine: bool = False, pg: dict = Depends(page_args)
         like = f"%{escape_like(q)}%"
         query = query.filter((Athlete.first_name.ilike(like, escape="\\")) | (Athlete.last_name.ilike(like, escape="\\")))
     rows, total = paginate(query, pg["limit"], pg["offset"])
+    # Wave 2: gender/birth_year included so the coach bulk-registration UI
+    # can auto-suggest a fitting category client-side (additive, no break).
     return envelope([{"id": a.id, "name": a.full_name, "club_id": a.club_id, "country": a.country, "points": a.points,
-             "wins": a.wins, "losses": a.losses, "weight": a.weight_kg} for a in rows],
+             "wins": a.wins, "losses": a.losses, "weight": a.weight_kg,
+             "gender": a.gender, "birth_year": a.birth_year} for a in rows],
              total, pg["limit"], pg["offset"])
 
 def _placement_from_matches(matches: list[BracketMatch], athlete_id: int) -> str:
@@ -84,13 +88,16 @@ def athlete_profile(aid: int, db: Session = Depends(get_db)):
 @router.post("/api/athletes")
 def create_athlete(data: AthleteIn, db: Session = Depends(get_db), user=Depends(require_perm("athletes.manage"))):
     if data.club_id is not None:
+        from app.core.permissions import has_role
         club = db.get(Club, data.club_id)
         if not club:
             raise HTTPException(400, "Unknown club_id")
         # P0: coach may attach athletes only to clubs they own; otherwise any
         # coach could hijack a foreign club by setting club_id on creation
         # (scope check in require_athlete_scope would then grant access via created_by).
-        if user.role == "coach" and club.owner_id != user.id:
+        # Multi-role: organizer/admin scope is wider — restrict coaches only.
+        if has_role(db, user, "coach") and not has_role(db, user, "organizer", "admin") \
+                and club.owner_id != user.id:
             raise HTTPException(403, "Foreign club")
     a = Athlete(**data.model_dump(), created_by=user.id)
     db.add(a)
@@ -104,12 +111,14 @@ def update_athlete(aid: int, data: AthleteIn, db: Session = Depends(get_db), use
     (created by them or in their club). Other roles: denied."""
     a = require_athlete_scope(aid, db, user)
     if data.club_id is not None:
+        from app.core.permissions import has_role
         club = db.get(Club, data.club_id)
         if not club:
             raise HTTPException(400, "Unknown club_id")
         # P0: prevent moving an athlete into a foreign club without its owner's
         # consent. Organizer/admin may move freely; coach only into own clubs.
-        if user.role == "coach" and club.owner_id != user.id:
+        if has_role(db, user, "coach") and not has_role(db, user, "organizer", "admin") \
+                and club.owner_id != user.id:
             raise HTTPException(403, "Foreign club")
     for k, v in data.model_dump().items():
         setattr(a, k, v)
@@ -204,6 +213,13 @@ def update_news(nid: int, data: NewsIn, db: Session = Depends(get_db), user: Use
     db.commit()
     return {"ok": True}
 
+@router.get("/api/referees")
+def list_referees(db: Session = Depends(get_db), user: User = Depends(require_perm("tournaments.manage"))):
+    """Wave 3: users available for tatami assignment (organizer tool, names only)."""
+    rows = db.query(User).filter_by(role="referee", is_active=True).order_by(User.full_name).all()
+    return [{"id": u.id, "name": u.full_name or u.email} for u in rows]
+
+
 @router.get("/api/search")
 def search(q: str, db: Session = Depends(get_db)):
     like = f"%{escape_like(q)}%"
@@ -234,4 +250,125 @@ def read_notification(nid: int, db: Session = Depends(get_db), user: User = Depe
     n.is_read = True
     db.commit()
     return {"ok": True}
+
+
+@router.post("/api/notifications/read-all")
+def read_all_notifications(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Wave 2: mark all own notifications read in one atomic update."""
+    n = db.query(Notification).filter_by(user_id=user.id, is_read=False).update({"is_read": True})
+    db.commit()
+    return {"ok": True, "marked": n}
+
+
+@router.get("/api/athletes/{aid}/documents")
+def athlete_documents(aid: int, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
+    """Wave 2: athlete's public-kind documents (diplomas/participation/protocol).
+
+    Requires login (codes are unguessable but enumerable per athlete).
+    `spravka` kind is excluded — it carries PII and has its own scoped
+    endpoint (`GET /api/spravki/{code}.pdf` with athlete-scope check).
+    """
+    a = db.get(Athlete, aid)
+    if not a:
+        raise HTTPException(404, "Not found")
+    rows = db.query(Document).filter(
+        Document.athlete_id == aid,
+        Document.kind.in_(["participation", "diploma", "protocol"])).order_by(
+        Document.id.desc()).all()
+    tmap = {t.id: t for t in db.query(Tournament).filter(
+        Tournament.id.in_([d.tournament_id for d in rows if d.tournament_id])).all()} if rows else {}
+    out = []
+    for d in rows:
+        try:
+            payload = json.loads(d.payload or "{}")
+        except ValueError:
+            payload = {}
+        t = tmap.get(d.tournament_id) if d.tournament_id else None
+        out.append({"code": d.code, "kind": d.kind,
+                    "tournament": t.name if t else "?",
+                    "date": str(t.start_date) if t else "",
+                    "place": payload.get("place", ""),
+                    "category": payload.get("category", "")})
+    return out
+
+
+# ---------- Wave 4: athlete identity (claim) + my applications ----------
+
+@router.post("/api/athletes/{aid}/claim")
+def claim_athlete(aid: int, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """Wave 4: link my user to an athlete profile (1:1, first-claim-wins).
+
+    Athlete role only (Wave 7): a coach/organizer linking a foreign profile
+    would gain status visibility + withdraw paths via the link. Enables
+    athlete self-service: apply/withdraw/list own applications.
+    403 wrong role; 404 unknown athlete; 409 profile already linked to
+    someone else (incl. concurrent-claim race via unique constraint);
+    400 this user already linked to another profile.
+    """
+    from sqlalchemy.exc import IntegrityError
+    from app.core.permissions import has_role
+    if not has_role(db, user, "athlete"):
+        raise HTTPException(403, "Only athletes claim profiles")
+    a = db.get(Athlete, aid)
+    if not a:
+        raise HTTPException(404, "Not found")
+    if a.user_id is not None:
+        if a.user_id == user.id:
+            return {"ok": True, "athlete_id": a.id}
+        raise HTTPException(409, "Profile already claimed")
+    mine = db.query(Athlete).filter_by(user_id=user.id).first()
+    if mine:
+        raise HTTPException(400, "Already linked to another profile")
+    a.user_id = user.id
+    db.add(AuditLog(actor_id=user.id, action=f"claimed athlete profile",
+                    entity="athlete", entity_id=a.id))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, "Profile already claimed")
+    return {"ok": True, "athlete_id": a.id}
+
+
+@router.get("/api/me/athlete")
+def my_athlete(db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    """Wave 4: my claimed athlete profile (id+name) for self-service UI."""
+    a = db.query(Athlete).filter_by(user_id=user.id).first()
+    if not a:
+        return None
+    club = db.get(Club, a.club_id) if a.club_id else None
+    return {"id": a.id, "name": a.full_name, "gender": a.gender,
+            "birth_year": a.birth_year, "weight": a.weight_kg,
+            "club": club.name if club else "—"}
+
+
+@router.get("/api/me/registrations")
+def my_registrations(db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
+    """Wave 4: applications of my linked athlete profile(s) with statuses."""
+    aids = [r[0] for r in db.query(Athlete.id).filter_by(user_id=user.id).all()]
+    if not aids:
+        return []
+    regs = db.query(Registration).filter(Registration.athlete_id.in_(aids)).order_by(
+        Registration.id.desc()).all()
+    tids = sorted({r.tournament_id for r in regs})
+    tmap = {t.id: t for t in db.query(Tournament).filter(Tournament.id.in_(tids)).all()} if tids else {}
+    cmap = {c.id: c for c in db.query(TournamentCategory).filter(
+        TournamentCategory.id.in_([r.category_id for r in regs])).all()} if regs else {}
+    out = []
+    for r in regs:
+        t = tmap.get(r.tournament_id)
+        c = cmap.get(r.category_id)
+        out.append({"id": r.id, "athlete_id": r.athlete_id,
+                    "tournament_id": r.tournament_id,
+                    "tournament": t.name if t else "?",
+                    "date": str(t.start_date) if t else "",
+                    "status": t.status if t else "",
+                    "category_id": r.category_id, "category": c.name if c else "?",
+                    "reg_status": r.status, "review_note": r.review_note,
+                    "checked_in": r.checked_in, "weigh_in_status": r.weigh_in_status})
+    return out
 

@@ -50,6 +50,13 @@ def register(data: Register, request: Request, response: Response, db: Session =
         db.rollback()
         raise HTTPException(400, pick(request, "Email уже зарегистрирован", "Email тіркелген"))
     db.refresh(u)
+    # Multi-role: primary role always present in the roles set.
+    from app.models.user import UserRole
+    db.add(UserRole(user_id=u.id, role=u.role, granted_by=None))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
     # Auto-login: same session as /login so the user lands in their account
     # without a second request. Keeps {"ok": True} for backward compatibility.
     token = create_token(str(u.id), u.role)
@@ -71,18 +78,22 @@ def logout(response: Response):
     return {"ok": True}
 
 @router.get("/me")
-def me(user: User = Depends(get_current_user)):
-    return {"id": user.id, "email": user.email, "role": user.role, "full_name": user.full_name}
+def me(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    from app.core.permissions import user_roles
+    return {"id": user.id, "email": user.email, "role": user.role,
+            "roles": sorted(user_roles(db, user)), "full_name": user.full_name}
 
 @router.get("/permissions")
 def my_permissions(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """Effective permission set for the current user (role defaults + grants)."""
-    from app.core.permissions import effective_permissions
-    return {"role": user.role, "permissions": sorted(effective_permissions(db, user))}
+    from app.core.permissions import effective_permissions, user_roles
+    return {"role": user.role, "roles": sorted(user_roles(db, user)),
+            "permissions": sorted(effective_permissions(db, user))}
 
 @router.post("/request-organizer")
 def request_organizer(data: OrgRequestIn, request: Request, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    if user.role == "organizer":
+    from app.core.permissions import has_role
+    if has_role(db, user, "organizer"):
         raise HTTPException(400, pick(request, "У вас уже есть доступ организатора", "Сізде ұйымдастырушы рұқсаты бар"))
     pending = db.query(OrganizerRequest).filter_by(user_id=user.id, status="pending").first()
     if pending:

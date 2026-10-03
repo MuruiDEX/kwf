@@ -199,3 +199,11 @@ table.data thead th { position: sticky; top: 0; background: var(--surface); z-in
   table.data th, table.data td { padding: 8px 10px; }
   .hero-stats { gap: 16px; }
 }
+
+/* ---------- Wave 1: print spravki preview (browser print, A4) ---------- */
+@media print {
+  body * { visibility: hidden; }
+  .print-sheet, .print-sheet * { visibility: visible; }
+  .print-sheet { position: absolute; left: 0; top: 0; width: 100%; }
+  @page { size: A4; margin: 15mm; }
+}

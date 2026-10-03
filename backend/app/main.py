@@ -4,7 +4,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import settings
 from app.core.db import Base, engine
 import app.models.user, app.models.club_athlete, app.models.tournament, app.models.competition, app.models.misc
-from app.api import auth, tournaments, core, live, exports, admin
+from app.api import auth, tournaments, core, live, exports, admin, spravki, training
 from app.core.ratelimit import RateLimitMiddleware
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -46,7 +46,21 @@ app.include_router(core.router)
 app.include_router(live.router)
 app.include_router(exports.router)
 app.include_router(admin.router)
+app.include_router(spravki.router)
+app.include_router(training.router)
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    # Liveness + DB reachability for orchestrators (migrations already run
+    # in lifespan; a lost DB after startup must still surface here).
+    try:
+        from sqlalchemy import text
+        from app.core.db import SessionLocal
+        db = SessionLocal()
+        try:
+            db.execute(text("SELECT 1"))
+            return {"ok": True, "db": True}
+        finally:
+            db.close()
+    except Exception:
+        return {"ok": False, "db": False}

@@ -43,9 +43,11 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> User |
 
 
 def require_roles(*roles: str):
-    def guard(user: User = Depends(get_current_user)) -> User:
-        if user.role not in roles and user.role != "admin":
-            raise HTTPException(status_code=403, detail="Forbidden for role " + user.role)
+    def guard(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
+        from app.core.permissions import user_roles
+        rs = user_roles(db, user)
+        if not (set(roles) & rs or "admin" in rs):
+            raise HTTPException(status_code=403, detail="Forbidden for roles " + ",".join(sorted(rs)))
         return user
     return guard
 
@@ -67,7 +69,9 @@ def require_perm(*perms: str):
 
 # ---------- tournament ownership scope (P0 + granular permissions) ----------
 #
-# Authorization matrix (permission AND ownership):
+# Authorization matrix (permission AND ownership). All role checks below are
+# SET-membership checks over user_roles() = {primary} ∪ secondaries, so
+# coach+organizer (either primary) gets the union of both behaviors.
 #   tournaments.create   organizer / admin (+ grantable, e.g. coach)
 #   tournaments.manage   mutate OWN tournament (created_by == me)
 #   tournaments.manage_all  any tournament (admin, non-grantable)
@@ -95,10 +99,11 @@ def require_staff():
     """Tournament staff gate: admin, referee (official), or anyone holding
     tournaments.manage. Ownership is still enforced per-resource by
     require_tournament_owner / require_match_access."""
-    from app.core.permissions import has_perm
+    from app.core.permissions import has_perm, user_roles
 
     def guard(user: User = Depends(get_current_user), db: Session = Depends(get_db)) -> User:
-        if user.role == "admin" or user.role == "referee":
+        rs = user_roles(db, user)
+        if "admin" in rs or "referee" in rs:
             return user
         if has_perm(db, user, "tournaments.manage"):
             return user
@@ -112,23 +117,27 @@ def require_tournament_owner(
     *,
     allow_referee: bool = False,
     allow_coach: bool = False,
+    allow_athlete: bool = False,
 ):
     """Return the tournament if `user` may mutate it, else 404/403.
 
     404 for missing tournament (no existence oracle for strangers), 403 for
     cross-tournament access.
     """
-    from app.core.permissions import has_perm
+    from app.core.permissions import has_perm, user_roles
     from app.models.tournament import Tournament
 
     t = db.get(Tournament, tid)
     if not t:
         raise HTTPException(status_code=404, detail="Not found")
-    if user.role == "admin" or has_perm(db, user, "tournaments.manage_all"):
+    rs = user_roles(db, user)
+    if "admin" in rs or has_perm(db, user, "tournaments.manage_all"):
         return t
-    if allow_referee and user.role == "referee":
+    if allow_referee and "referee" in rs:
         return t
-    if allow_coach and user.role == "coach":
+    if allow_coach and "coach" in rs:
+        return t
+    if allow_athlete and "athlete" in rs:
         return t
     if t.created_by == user.id and has_perm(db, user, "tournaments.manage"):
         return t
@@ -141,7 +150,7 @@ def require_athlete_scope(aid: int, db: Session, user: User):
     Organizer/admin: any athlete. Coach: only own athletes
     (created_by == me, or member of a club I own). Other roles: denied.
     """
-    from app.core.permissions import has_perm
+    from app.core.permissions import has_perm, user_roles
     from app.models.club_athlete import Athlete, Club
 
     a = db.get(Athlete, aid)
@@ -149,9 +158,10 @@ def require_athlete_scope(aid: int, db: Session, user: User):
         raise HTTPException(status_code=404, detail="Not found")
     if not has_perm(db, user, "athletes.manage"):
         raise HTTPException(status_code=403, detail="Missing permission: athletes.manage")
-    if user.role in ("organizer", "admin"):
+    rs = user_roles(db, user)
+    if "organizer" in rs or "admin" in rs:
         return a
-    if user.role == "coach":
+    if "coach" in rs:
         if a.created_by == user.id:
             return a
         if a.club_id:
@@ -159,7 +169,7 @@ def require_athlete_scope(aid: int, db: Session, user: User):
             if club and club.owner_id == user.id:
                 return a
         raise HTTPException(status_code=403, detail="Foreign athlete")
-    raise HTTPException(status_code=403, detail="Forbidden for role " + user.role)
+    raise HTTPException(status_code=403, detail="Forbidden for roles " + ",".join(sorted(rs)))
 
 
 def require_match_access(mid: int, db: Session, user: User):

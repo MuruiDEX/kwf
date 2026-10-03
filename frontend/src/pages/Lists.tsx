@@ -5,7 +5,7 @@ import { useLang } from '../i18n';
 import { api, errMsg, pageItems } from '../lib/api';
 import { useAuth, notify } from '../auth';
 import { DataTable, Skeleton, Badge, QueryState } from '../components/ui/core';
-import { useAthletes, useAthlete, useRankings, useClubs, useClub, useTournamentsLive } from '../lib/queries';
+import { useAthletes, useAthlete, useAthleteDocs, useMyAthleteProfile, useClaimAthlete, useRankings, useClubs, useClub, useTournamentsLive } from '../lib/queries';
 import type { Athlete, RankingEntry, Club } from '../types/api';
 
 function useDebounced<T>(v: T, ms = 300) {
@@ -69,6 +69,10 @@ export function AthleteDetail() {
       notify(t('adm.saved'), 'ok');
       setEdit(false);
       qc.invalidateQueries({ queryKey: ['athlete', String(id)] });
+      // Wave 7: lists/rankings/clubs read the same edited row.
+      qc.invalidateQueries({ queryKey: ['athletes'] });
+      qc.invalidateQueries({ queryKey: ['rankings'] });
+      qc.invalidateQueries({ queryKey: ['clubs'] });
     } catch (e: unknown) {
       const m = `${t('common.err')}: ` + errMsg(e);
       setMsg(m);
@@ -87,7 +91,8 @@ export function AthleteDetail() {
         <div className="mt-1 text-sm">{t('a.club')}: {data.club_id ? <Link to={`/clubs/${data.club_id}`}>{data.club}</Link> : data.club} · {t('a.points')}: <b>{data.points}</b> · {t('a.wl')}: {data.wins}-{data.losses}</div>
         {can('athletes.manage') && (
           <button className="btn-ghost text-xs !py-1.5 mt-2" onClick={() => (edit ? setEdit(false) : openEdit())}>✎ {t('common.edit')}</button>
-        )}</div>
+        )}
+        <ClaimButton aid={id} /></div>
       {edit && (
         <div className="card p-4 space-y-2 fade-up">
           <div className="grid grid-cols-2 gap-2">
@@ -107,6 +112,7 @@ export function AthleteDetail() {
       {!data.history.length ? <div className="card p-4 text-sm" style={{ color: 'var(--muted)' }}>{t('a.noHist')}</div> :
         <DataTable cols={[t('a.tournament'), t('a.date'), t('res.category'), t('a.result')]}
           rows={data.history.map((h, i: number) => [<Link key={i} to={`/tournaments/${h.tournament_id}`}>{h.tournament}</Link>, h.date, h.category, <Badge key={i} tone="gold">{RESULT[h.result] ?? h.result}</Badge>])} />}
+      <AthleteDocs id={id} />
     </div>
   );
 }
@@ -166,6 +172,10 @@ export function ClubDetail() {
       <h2 className="font-bold">{t('c.athletes')}</h2>
       <DataTable cols={[t('a.name'), t('a.points'), t('a.wl')]}
         rows={data.athletes.map((a) => [<Link key={a.id} to={`/athletes/${a.id}`}>{a.name}</Link>, a.points, `${a.wins}-${a.losses}`])} />
+      <div className="flex gap-2 flex-wrap">
+        <a className="card px-3 py-1.5 text-sm font-semibold" href={`/api/clubs/${id}/report.pdf`}>{t('c.reportPdf')}</a>
+        <a className="card px-3 py-1.5 text-sm font-semibold" href={`/api/clubs/${id}/report.xlsx`}>{t('c.reportXlsx')}</a>
+      </div>
     </div>
   );
 }
@@ -181,4 +191,58 @@ export function LiveAll() {
   return <div className="space-y-4"><div><span className="eyebrow">{t('l.eyebrow')}</span><h1 className="display text-3xl font-semibold mt-1">{t('l.title')}</h1></div>
     {!data?.length ? <div className="card p-8 text-center text-sm" style={{ color: 'var(--muted)' }}>{t('l.empty')}</div> :
       data.map((x) => <Link key={x.id} to={`/tournaments/${x.id}?tab=live`} className="card card-hover p-4 flex items-center gap-3 font-bold"><span className="pulse-dot" />{x.name}</Link>)}</div>;
+}
+
+// Wave 2: athlete's public-kind documents (diplomas/participation/protocol)
+// with re-download. Spravki (PII) are excluded server-side; guests see nothing
+// (endpoint requires login).
+function AthleteDocs({ id }: { id: string | undefined }) {
+  const { t } = useLang();
+  const { user } = useAuth();
+  const { data, isLoading } = useAthleteDocs(id, !!user);
+  if (!user || isLoading) return null;
+  if (!data?.length) return null;
+  return (
+    <div className="space-y-2">
+      <h2 className="font-bold">{t('a.docs')}</h2>
+      <DataTable cols={[t('res.diploma'), t('res.category'), t('res.place')]}
+        rows={data.map((d) => [
+          <Link key={d.code} to={`/verify/${d.code}`} className="font-semibold">{d.tournament} · {d.date}</Link>,
+          d.category || '—',
+          d.place || d.kind,
+        ])} />
+      <div className="flex gap-2 flex-wrap">
+        {data.map((d) => (
+          <a key={d.code} className="card px-3 py-1.5 text-sm font-semibold" href={`/api/documents/${d.code}/certificate.pdf`}>{t('v.pdf')} · {d.code.slice(0, 6)}</a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Wave 4: claim athlete profile for self-service (athlete role only).
+function ClaimButton({ aid }: { aid: string | undefined }) {
+  const { t } = useLang();
+  const { user, hasRole } = useAuth();
+  const { data: mine } = useMyAthleteProfile(!!user && hasRole('athlete'));
+  const claim = useClaimAthlete();
+  const [msg, setMsg] = useState('');
+  if (!user || !hasRole('athlete') || aid == null) return null;
+  if (mine && String(mine.id) === String(aid)) {
+    return <div className="mt-2"><Badge tone="gold">{t('claim.mine')}</Badge></div>;
+  }
+  if (mine) return null;
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <button className="btn-ghost text-xs !py-1.5"
+              disabled={claim.isPending}
+              onClick={() => claim.mutate(Number(aid), {
+                onSuccess: () => setMsg(t('claim.ok')),
+                onError: (e: unknown) => setMsg(`${t('common.err')}: ` + errMsg(e)),
+              })}>
+        {claim.isPending ? '…' : t('claim.me')}
+      </button>
+      {msg && <span className="text-xs">{msg}</span>}
+    </div>
+  );
 }

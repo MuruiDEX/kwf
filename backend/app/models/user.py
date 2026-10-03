@@ -27,3 +27,20 @@ class UserPermission(Base):
     permission: Mapped[str] = mapped_column(String(64), index=True)
     granted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class UserRole(Base):
+    """Secondary roles (multi-role: coach AND organizer, ...).
+
+    `User.role` stays the primary role (display + backward compatibility);
+    the effective role SET is {primary} ∪ rows here. Invariant: primary is
+    always implied even without a row; rows only ADD roles, removal of the
+    primary goes through the primary-role change path.
+    """
+    __tablename__ = "user_roles"
+    __table_args__ = (UniqueConstraint("user_id", "role", name="uq_user_role"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(32), index=True)
+    granted_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

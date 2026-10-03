@@ -27,6 +27,9 @@ class Athlete(Base):
     country: Mapped[str] = mapped_column(String(64), default="", index=True)
     club_id: Mapped[int | None] = mapped_column(ForeignKey("clubs.id", ondelete="SET NULL"), nullable=True, index=True)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, default=None, index=True)
+    # Wave 4: identity link for athlete self-service (claim profile -> apply/withdraw).
+    # Nullable + unique (1:1); existing rows keep working unlinked.
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, default=None, unique=True, index=True)
     points: Mapped[int] = mapped_column(Integer, default=0, index=True)  # ranking points cache
     wins: Mapped[int] = mapped_column(Integer, default=0)
     losses: Mapped[int] = mapped_column(Integer, default=0)
@@ -36,3 +39,20 @@ class Athlete(Base):
     @property
     def full_name(self) -> str:
         return f"{self.first_name} {self.last_name}"
+
+
+class TrainingSession(Base):
+    """Multi-role wave: minimal club training session (coach schedule).
+
+    Scoped by club ownership (club.owner_id), not by role string — so a
+    coach+organizer keeps full trainer functionality either way.
+    """
+    __tablename__ = "training_sessions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    club_id: Mapped[int] = mapped_column(ForeignKey("clubs.id", ondelete="CASCADE"), index=True)
+    coach_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(255), default="")
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str] = mapped_column(String(512), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

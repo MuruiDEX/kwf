@@ -79,6 +79,8 @@ export function Header({ onCmdk }: { onCmdk: () => void }) {
                   </div>
                 </div>
               ))}
+              <Link to="/notifications" onClick={() => setShowNotes(false)}
+                    className="block pt-2 text-xs font-bold underline">{t('nt.title')} →</Link>
             </div>
           )}
           <button onClick={toggle} className="card p-2 hidden sm:block" aria-label={t('nav.theme')}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button>

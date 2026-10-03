@@ -149,3 +149,12 @@ test('mobile 390px: no horizontal overflow on key pages', async ({ page }) => {
     expect(overflow, `horizontal overflow on ${url}: ${overflow}px`).toBeLessThanOrEqual(1);
   }
 });
+
+// Infra pacing, NOT a state wait and NOT a test: the backend rate-limits auth
+// endpoints (10/60s per IP) and this file alone performs ~6 registrations +
+// ~4 logins. Without a gap, the next file's auth burst lands in the same
+// sliding window and trips 429. Production limits, workers and auth logic
+// are untouched; register/login tests still hit the real endpoints.
+test.afterAll(async () => {
+  await new Promise((r) => setTimeout(r, 65_000));
+});

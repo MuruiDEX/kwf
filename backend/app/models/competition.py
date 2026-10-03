@@ -15,6 +15,9 @@ class Registration(Base):
     checked_in: Mapped[bool] = mapped_column(default=False)
     weigh_in_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
     weigh_in_status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|ok|over|under
+    # Wave 3: moderation workflow (default approved = previous auto-accept).
+    status: Mapped[str] = mapped_column(String(16), default="approved")  # pending|approved|rejected|withdrawn
+    review_note: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class Tatami(Base):

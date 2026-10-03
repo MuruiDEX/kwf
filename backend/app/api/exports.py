@@ -148,11 +148,13 @@ def exp_sched_csv(tid: int, db: Session = Depends(get_db), user: User = Depends(
 def _pdf(title: str, lines: list[str]) -> bytes:
     from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import A4
+    from app.services.pdf_fonts import ensure_fonts
+    regular, bold = ensure_fonts()
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
-    c.setFont("Helvetica-Bold", 18)
+    c.setFont(bold, 18)
     c.drawString(60, 780, title)
-    c.setFont("Helvetica", 11)
+    c.setFont(regular, 11)
     y = 750
     for ln in lines:
         c.drawString(60, y, ln[:110])
@@ -175,7 +177,252 @@ def exp_protocol(tid: int, db: Session = Depends(get_db), user: User = Depends(r
     return Response(pdf, media_type="application/pdf",
                     headers={"Content-Disposition": f"attachment; filename=t{tid}-protocol.pdf"})
 
+# ---------- Wave 1: print sheets (weigh-in / start protocol / tatami schedule) ----------
+
+def _sheet_pdf(title: str, headers: list[str], rows: list[list]) -> bytes:
+    """One A4 table helper on bundled Cyrillic fonts."""
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import A4
+    from app.services.pdf_fonts import ensure_fonts
+    regular, bold = ensure_fonts()
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    widths = [38, 200, 130, 70, 60, 70][:len(headers)]
+    xs = [40]
+    for w_ in widths[:-1]:
+        xs.append(xs[-1] + w_)
+
+    def header(y0):
+        c.setFont(bold, 14)
+        c.drawString(40, y0, title[:90])
+        c.setFont(bold, 10)
+        for x, h in zip(xs, headers):
+            c.drawString(x, y0 - 22, h[:28])
+        return y0 - 40
+
+    y = header(800)
+    c.setFont(regular, 10)
+    for row in rows:
+        if y < 60:
+            c.showPage()
+            y = header(800)
+            c.setFont(regular, 10)
+        for x, cell in zip(xs, row):
+            c.drawString(x, y, str(cell if cell is not None else "")[:30])
+        y -= 18
+    c.showPage()
+    c.save()
+    return buf.getvalue()
+
+
+@router.get("/api/tournaments/{tid}/export/weighin.pdf")
+def exp_weighin_pdf(tid: int, db: Session = Depends(get_db), user: User = Depends(require_perm("tournaments.manage"))):
+    """Wave 1: printable weigh-in sheet (athlete, category, weight, status)."""
+    require_tournament_owner(tid, db, user)
+    rows = []
+    for r in _participants(db, tid):
+        rows.append([r["athlete"], r["category"], r["weight"], r["weigh_in"], r["checked_in"]])
+    pdf = _sheet_pdf("Weigh-in sheet", ["Athlete", "Category", "Weight", "Status", "In"], rows)
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename=t{tid}-weighin.pdf"})
+
+
+@router.get("/api/tournaments/{tid}/export/start-protocol.pdf")
+def exp_start_protocol_pdf(tid: int, db: Session = Depends(get_db), user: User = Depends(require_perm("tournaments.manage"))):
+    """Wave 1: start protocol grouped by category in seed order."""
+    require_tournament_owner(tid, db, user)
+    regs = db.query(Registration).filter_by(tournament_id=tid).order_by(Registration.seed.desc()).all()
+    amap = {a.id: a for a in db.query(Athlete).filter(
+        Athlete.id.in_([r.athlete_id for r in regs])).all()} if regs else {}
+    cmap = {c.id: c for c in db.query(TournamentCategory).filter_by(tournament_id=tid).all()}
+    by_cat: dict[int, list] = {}
+    for r in regs:
+        by_cat.setdefault(r.category_id, []).append(r)
+    rows = []
+    for cid, rs in by_cat.items():
+        c = cmap.get(cid)
+        rows.append([f"== {c.name if c else '?'} ==", "", "", "", ""])
+        for i, r in enumerate(rs, 1):
+            a = amap.get(r.athlete_id)
+            rows.append([i, a.full_name if a else "?", a.country if a else "",
+                         a.weight_kg if a else "", ""])
+    pdf = _sheet_pdf("Start protocol", ["#", "Athlete", "Country", "Weight", "Sign"], rows)
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename=t{tid}-start-protocol.pdf"})
+
+
+@router.get("/api/tournaments/{tid}/export/schedule.pdf")
+def exp_schedule_pdf(tid: int, db: Session = Depends(get_db), user: User = Depends(require_perm("tournaments.manage"))):
+    """Wave 1: printable tatami schedule (match order, names, times)."""
+    require_tournament_owner(tid, db, user)
+    bids = [b.id for b in db.query(Bracket).filter_by(tournament_id=tid).all()]
+    ms = db.query(BracketMatch).filter(BracketMatch.bracket_id.in_(bids)).order_by(
+        BracketMatch.tatami_id, BracketMatch.scheduled_at).all() if bids else []
+    aids = ({m.athlete_a_id for m in ms} | {m.athlete_b_id for m in ms}) - {None}
+    amap = {a.id: a for a in db.query(Athlete).filter(Athlete.id.in_(aids)).all()} if aids else {}
+    rows = []
+    for m in ms:
+        def nm(aid):
+            a = amap.get(aid) if aid else None
+            return a.full_name if a else "bye"
+        at = str(m.scheduled_at)[11:16] if m.scheduled_at else ""
+        rows.append([m.id, f"T{m.tatami_id or '—'}", at, f"{nm(m.athlete_a_id)} — {nm(m.athlete_b_id)}", m.status])
+    if not rows:
+        rows = [["—", "", "", "No fights scheduled", ""]]
+    pdf = _sheet_pdf("Tatami schedule", ["Match", "Tatami", "Time", "Fight", "Status"], rows)
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename=t{tid}-schedule.pdf"})
+
 # ---------- documents / certificates (§19) ----------
+
+def _podium(db: Session, tid: int) -> list[dict]:
+    """Wave 1: places 1-3 per finished category from single-elimination data.
+
+    Honest mapping (no bronze fight exists): gold = final winner,
+    silver = final loser, bronze = semifinal losers. Unfinished categories
+    yield no places. Returns [{category_id, category, gold_id, silver_id,
+    bronze_ids}].
+    """
+    brackets = db.query(Bracket).filter_by(tournament_id=tid).all()
+    if not brackets:
+        return []
+    bids = [b.id for b in brackets]
+    cmap = {c.id: c for c in db.query(TournamentCategory).filter(
+        TournamentCategory.id.in_([b.category_id for b in brackets])).all()}
+    ms = db.query(BracketMatch).filter(BracketMatch.bracket_id.in_(bids)).all()
+    by_bracket: dict[int, list] = {}
+    for m in ms:
+        by_bracket.setdefault(m.bracket_id, []).append(m)
+    out = []
+    for b in brackets:
+        matches = by_bracket.get(b.id, [])
+        finals = [m for m in matches
+                  if m.next_match_id is None and m.status == "finished" and m.winner_id]
+        if not finals:
+            continue
+        fin = finals[0]
+        loser = fin.athlete_a_id if fin.winner_id == fin.athlete_b_id else fin.athlete_b_id
+        semis = [m for m in matches
+                 if m.next_match_id == fin.id and m.status == "finished" and m.winner_id]
+        bronze = []
+        for s in semis:
+            l = s.athlete_a_id if s.winner_id == s.athlete_b_id else s.athlete_b_id
+            if l and l != s.winner_id:
+                bronze.append(l)
+        out.append({"category_id": b.category_id,
+                    "category": cmap[b.category_id].name if b.category_id in cmap else "?",
+                    "gold_id": fin.winner_id,
+                    "silver_id": loser,
+                    "bronze_ids": sorted(set(bronze) - {fin.winner_id, loser})})
+    return out
+
+
+def _issue_one(db: Session, athlete_id: int, tournament_id: int, kind: str,
+               place: str, category: str) -> Document | None:
+    """Create a diploma unless an identical one already exists (idempotent bulk)."""
+    exists = db.query(Document).filter_by(athlete_id=athlete_id, tournament_id=tournament_id,
+                                          kind=kind).first()
+    if exists and kind == "diploma":
+        # same athlete+kind: keep the best (lowest) place
+        try:
+            old = json.loads(exists.payload or "{}")
+        except ValueError:
+            old = {}
+        try:
+            if old.get("place") and int(old["place"]) <= int(place):
+                return None
+        except (ValueError, TypeError):
+            pass
+        exists.payload = json.dumps({"place": place[:32], "category": category[:128]})
+        return exists
+    if exists:
+        return None
+    d = Document(code=secrets.token_hex(16).upper(), kind=kind, athlete_id=athlete_id,
+                 tournament_id=tournament_id,
+                 payload=json.dumps({"place": place[:32], "category": category[:128]}))
+    db.add(d)
+    return d
+
+
+@router.get("/api/tournaments/{tid}/podium")
+def podium(tid: int, db: Session = Depends(get_db)):
+    """Wave 1: public places 1-3 per finished category (names resolved)."""
+    t = db.get(Tournament, tid)
+    if not t:
+        raise HTTPException(404, "Not found")
+    pod = _podium(db, tid)
+    aids = set()
+    for p in pod:
+        aids.add(p["gold_id"])
+        aids.add(p["silver_id"])
+        aids.update(p["bronze_ids"])
+    aids.discard(None)
+    amap = {a.id: a for a in db.query(Athlete).filter(Athlete.id.in_(list(aids))).all()} if aids else {}
+    cids = [a.club_id for a in amap.values() if a.club_id]
+    clubmap = {c.id: c for c in db.query(Club).filter(Club.id.in_(cids)).all()} if cids else {}
+    out = []
+    for p in pod:
+        def nm(aid):
+            a = amap.get(aid) if aid else None
+            if not a:
+                return None
+            club = clubmap.get(a.club_id) if a.club_id else None
+            return {"id": a.id, "name": a.full_name, "club": club.name if club else "—"}
+        out.append({"category_id": p["category_id"], "category": p["category"],
+                    "gold": nm(p["gold_id"]), "silver": nm(p["silver_id"]),
+                    "bronze": [nm(b) for b in p["bronze_ids"] if nm(b)]})
+    return out
+
+
+@router.post("/api/tournaments/{tid}/documents/issue-podium")
+def issue_podium(tid: int, db: Session = Depends(get_db), user: User = Depends(require_perm("documents.manage"))):
+    """Wave 1: bulk diplomas for places 1-3 across finished categories."""
+    from app.core.permissions import has_perm, user_roles
+    t = db.get(Tournament, tid)
+    if not t:
+        raise HTTPException(404, "Not found")
+    if not ("admin" in user_roles(db, user) or has_perm(db, user, "tournaments.manage_all")):
+        if not (t.created_by == user.id and has_perm(db, user, "documents.manage")):
+            raise HTTPException(403, "Foreign tournament")
+    issued, skipped = [], 0
+    for p in _podium(db, tid):
+        spots = [(p["gold_id"], "1"), (p["silver_id"], "2")] + [(b, "3") for b in p["bronze_ids"]]
+        for aid, place in spots:
+            if not aid:
+                continue
+            d = _issue_one(db, aid, tid, "diploma", place, p["category"])
+            if d is None:
+                skipped += 1
+            else:
+                db.flush()
+                issued.append({"athlete_id": aid, "place": place, "code": d.code})
+    db.commit()
+    return {"issued": issued, "skipped": skipped}
+
+
+@router.get("/api/tournaments/{tid}/documents")
+def list_documents(tid: int, db: Session = Depends(get_db), user: User = Depends(require_perm("documents.manage"))):
+    """Wave 1: registry of issued documents for re-download (owner scope)."""
+    t = db.get(Tournament, tid)
+    if not t:
+        raise HTTPException(404, "Not found")
+    require_tournament_owner(tid, db, user)
+    rows = db.query(Document).filter_by(tournament_id=tid).order_by(Document.id.desc()).all()
+    amap = {a.id: a for a in db.query(Athlete).filter(
+        Athlete.id.in_([d.athlete_id for d in rows if d.athlete_id])).all()} if rows else {}
+    out = []
+    for d in rows:
+        try:
+            payload = json.loads(d.payload or "{}")
+        except ValueError:
+            payload = {}
+        a = amap.get(d.athlete_id) if d.athlete_id else None
+        out.append({"code": d.code, "kind": d.kind, "athlete_id": d.athlete_id,
+                    "athlete": a.full_name if a else "?", "place": payload.get("place", ""),
+                    "category": payload.get("category", ""),
+                    "template": payload.get("template", ""),
+                    "at": str(d.created_at)})
+    return out
 
 @router.post("/api/documents/issue")
 def issue_doc(athlete_id: int, tournament_id: int, kind: str = "participation",
@@ -184,11 +431,11 @@ def issue_doc(athlete_id: int, tournament_id: int, kind: str = "participation",
     # P1: ownership must match the required permission. require_tournament_owner
     # checks tournaments.manage, which would force callers to hold BOTH perms;
     # a coach granted only documents.manage on their own tournament got 403.
-    from app.core.permissions import has_perm
+    from app.core.permissions import has_perm, user_roles
     t = db.get(Tournament, tournament_id)
     if not t:
         raise HTTPException(404, "Not found")
-    if not (user.role == "admin" or has_perm(db, user, "tournaments.manage_all")):
+    if not ("admin" in user_roles(db, user) or has_perm(db, user, "tournaments.manage_all")):
         if not (t.created_by == user.id and has_perm(db, user, "documents.manage")):
             raise HTTPException(403, "Foreign tournament")
     if kind not in ("participation", "diploma"):
@@ -196,10 +443,23 @@ def issue_doc(athlete_id: int, tournament_id: int, kind: str = "participation",
     reg = db.query(Registration).filter_by(tournament_id=tournament_id, athlete_id=athlete_id).first()
     if not reg:
         raise HTTPException(400, "Athlete is not registered in this tournament")
-    code = secrets.token_hex(16).upper()
-    payload = json.dumps({"place": place[:32], "category": category[:128]})
-    db.add(Document(code=code, kind=kind, athlete_id=athlete_id, tournament_id=tournament_id, payload=payload))
+    # Wave 7: idempotent single issue (same helper as bulk podium) — a double
+    # click or retry returns the existing code instead of minting duplicates.
+    d = _issue_one(db, athlete_id, tournament_id, kind, place, category)
+    if d is None:
+        d = db.query(Document).filter_by(athlete_id=athlete_id,
+                                        tournament_id=tournament_id, kind=kind).first()
+    else:
+        db.flush()
     db.commit()
+    code = d.code
+    # Wave 1: notify the athlete's coach (if someone else issued it).
+    from app.services.notifications import emit_event, coach_of_athlete
+    coach = coach_of_athlete(db, athlete_id)
+    if coach and coach != user.id:
+        emit_event(db, "document", [coach],
+                   f"Документ готов: {kind} {place} (t{tournament_id})".strip(),
+                   link=f"/tournaments/{tournament_id}?tab=results")
     return {"code": code}
 
 @router.get("/api/documents/verify/{code}")
@@ -227,22 +487,33 @@ def certificate_pdf(code: str, db: Session = Depends(get_db)):
     if not d:
         raise HTTPException(404, "Document not found")
     v = verify_doc(code, db)
+    from app.services.pdf_fonts import ensure_fonts
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    regular, bold = ensure_fonts()
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
-    c.setFont("Helvetica-Bold", 26)
+    c.setFont(bold, 26)
     c.drawCentredString(300, 700, "KWF")
-    c.setFont("Helvetica", 14)
+    c.setFont(regular, 14)
     c.drawCentredString(300, 670, {"participation": "Certificate of Participation", "diploma": "Diploma"}.get(d.kind, d.kind))
-    c.setFont("Helvetica-Bold", 20)
-    c.drawCentredString(300, 620, v["athlete"])
-    c.setFont("Helvetica", 12)
-    c.drawCentredString(300, 590, f"{v['tournament']}  ·  {v.get('category', '')}  ·  {v.get('place', '')}")
+
+    def _fit(text: str, font: str, size: int, max_w: float = 480, min_size: int = 10) -> int:
+        # Wave 7: long names shrink instead of clipping past the page edge.
+        while size > min_size and stringWidth(text, font, size) > max_w:
+            size -= 1
+        return size
+
+    athlete, sub = v["athlete"], f"{v['tournament']}  ·  {v.get('category', '')}  ·  {v.get('place', '')}"
+    c.setFont(bold, _fit(athlete, bold, 20))
+    c.drawCentredString(300, 620, athlete)
+    c.setFont(regular, _fit(sub, regular, 12))
+    c.drawCentredString(300, 590, sub)
     qr = qrcode.make(f"verify:{d.code}")
     qbuf = io.BytesIO()
     qr.save(qbuf, format="PNG")
     qbuf.seek(0)
     c.drawImage(ImageReader(qbuf), 250, 400, 100, 100)
-    c.setFont("Helvetica", 10)
+    c.setFont(regular, 10)
     c.drawCentredString(300, 380, f"Verify: {d.code}")
     c.showPage()
     c.save()
@@ -256,10 +527,10 @@ def list_audit(tournament_id: int | None = None, pg: dict = Depends(page_args), 
     """Audit log. Admin sees everything; organizers see only entries related
     to their own tournaments (or their own actions) — P0 fix for global leak
     where any organizer could read foreign tournaments' audit trail."""
-    from app.core.permissions import has_perm
+    from app.core.permissions import has_perm, user_roles
     from sqlalchemy import or_, and_
     q = db.query(AuditLog).order_by(AuditLog.id.desc())
-    if user.role != "admin" and not has_perm(db, user, "tournaments.manage_all"):
+    if "admin" not in user_roles(db, user) and not has_perm(db, user, "tournaments.manage_all"):
         own_tids = {r[0] for r in db.query(Tournament.id).filter_by(created_by=user.id).all()}
         # Resolve match/registration audit rows back to their tournament so an
         # organizer sees foreign-actor events (e.g. referee's "finished fight")
@@ -326,3 +597,80 @@ def tournament_report(tid: int, lang: str = "ru", db: Session = Depends(get_db))
              "fights_total": len(fights), "fights_finished": len(finished),
              "club_gold": sorted(club_gold.items(), key=lambda x: -x[1])}
     return {"tournament": t.name, "stats": stats, "standings": standings, "markdown": "\n".join(lines)}
+
+# ---------- Wave 2: club report (roster, tournaments, medals, points) ----------
+
+def _club_report_data(db: Session, cid: int) -> dict:
+    """Assemble club report from existing rows. No time series exists in the
+    DB, so dynamics are honest totals (points/wins summed), not invented."""
+    c = db.get(Club, cid)
+    if not c:
+        raise HTTPException(404, "Not found")
+    athletes = db.query(Athlete).filter_by(club_id=cid).order_by(Athlete.points.desc()).all()
+    aids = [a.id for a in athletes]
+    regs = db.query(Registration).filter(Registration.athlete_id.in_(aids)).all() if aids else []
+    tids = sorted({r.tournament_id for r in regs})
+    tmap = {t.id: t for t in db.query(Tournament).filter(Tournament.id.in_(tids)).all()} if tids else {}
+    gold = silver = bronze = 0
+    per_tournament = []
+    for tid in tids:
+        t = tmap.get(tid)
+        mine = {r.athlete_id for r in regs if r.tournament_id == tid}
+        per_tournament.append({"id": tid, "name": t.name if t else "?",
+                               "date": str(t.start_date) if t else "",
+                               "participants": len(mine)})
+        for p in _podium(db, tid):
+            if p["gold_id"] in mine:
+                gold += 1
+            if p["silver_id"] in mine:
+                silver += 1
+            bronze += len([b for b in p["bronze_ids"] if b in mine])
+    return {"club": {"id": c.id, "name": c.name, "country": c.country,
+                     "city": c.city, "coach": c.coach_name},
+            "roster": [{"id": a.id, "name": a.full_name, "points": a.points or 0,
+                        "wins": a.wins or 0, "losses": a.losses or 0} for a in athletes],
+            "tournaments": per_tournament,
+            "stats": {"athletes": len(athletes),
+                      "tournaments": len(tids),
+                      "participations": len(regs),
+                      "gold": gold, "silver": silver, "bronze": bronze,
+                      "points": sum(a.points or 0 for a in athletes)}}
+
+
+@router.get("/api/clubs/{cid}/report")
+def club_report(cid: int, db: Session = Depends(get_db)):
+    return _club_report_data(db, cid)
+
+
+@router.get("/api/clubs/{cid}/report.pdf")
+def club_report_pdf(cid: int, db: Session = Depends(get_db)):
+    rep = _club_report_data(db, cid)
+    rows = [[a["name"], a["points"], f"{a['wins']}-{a['losses']}"] for a in rep["roster"]]
+    rows.append(["", "", ""])
+    s = rep["stats"]
+    rows += [[f"Tournaments: {s['tournaments']}", f"Entries: {s['participations']}", ""],
+             [f"Gold: {s['gold']}", f"Silver: {s['silver']}", f"Bronze: {s['bronze']}"]]
+    pdf = _sheet_pdf(f"Club report - {rep['club']['name']}", ["Athlete", "Points", "W-L"], rows or [["—", "", ""]])
+    return Response(pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f"attachment; filename=club{cid}-report.pdf"})
+
+
+@router.get("/api/clubs/{cid}/report.xlsx")
+def club_report_xlsx(cid: int, db: Session = Depends(get_db)):
+    from openpyxl import Workbook
+    rep = _club_report_data(db, cid)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Roster"
+    ws.append(["Athlete", "Points", "Wins", "Losses"])
+    for a in rep["roster"]:
+        ws.append([a["name"], a["points"], a["wins"], a["losses"]])
+    ws2 = wb.create_sheet("Tournaments")
+    ws2.append(["Tournament", "Date", "Participants"])
+    for t in rep["tournaments"]:
+        ws2.append([t["name"], t["date"], t["participants"]])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return Response(buf.getvalue(),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename=club{cid}-report.xlsx"})

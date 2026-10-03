@@ -1,13 +1,14 @@
 import { useState } from 'react';
 import type { ChangeEvent, ReactNode } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { useLang } from '../i18n';
 import { useAuth } from '../auth';
 import { api, errMsg, pageItems } from '../lib/api';
 import { firstIssue, newsSchema } from '../lib/validators';
 import { DataTable, EmptyState, Skeleton } from '../components/ui/core';
-import { useNews, useNewsDetail, useResults, useReport, useVerify } from '../lib/queries';
-import type { NewsItem } from '../types/api';
+import { useNews, useNewsDetail, useResults, useReport, useVerify, usePodium, useTournamentDocs } from '../lib/queries';
+import type { NewsItem, Podium } from '../types/api';
 
 const CATS = ['events', 'tournaments', 'clubs', 'results', 'announcements'];
 
@@ -157,6 +158,9 @@ export function ExportBar({ tid }: { tid: string }) {
     ['participants.xlsx', t('exp.pxlsx')],
     ['schedule.csv', t('exp.scsv')],
     ['protocol.pdf', t('exp.proto')],
+    ['weighin.pdf', t('exp.wsheet')],
+    ['start-protocol.pdf', t('exp.sproto')],
+    ['schedule.pdf', t('exp.spdf')],
   ];
   return (
     <div className="flex gap-2 flex-wrap">
@@ -195,13 +199,82 @@ export function Results({ tid }: { tid: string }) {
             })} />
         </div>
       )}
+      <PodiumBlock tid={tid} />
+      {canIssue && <DocsRegistry tid={tid} />}
       <ReportBlock tid={tid} />
+    </div>
+  );
+}
+
+// Wave 1: places 1-3 podium + bulk issue + registry of issued documents.
+export function PodiumBlock({ tid }: { tid: string }) {
+  const { t } = useLang();
+  const { can } = useAuth();
+  const qc = useQueryClient();
+  const canIssue = can('documents.manage');
+  const { data, isLoading, refetch } = usePodium(tid);
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+  if (isLoading) return <Skeleton className="h-32" />;
+  if (!data?.length) return null;
+  const bulk = async () => {
+    if (busy) return;
+    setBusy(true);
+    setMsg('');
+    try {
+      const r = await api<{ issued: unknown[]; skipped: number }>(
+        `/api/tournaments/${tid}/documents/issue-podium`, { method: 'POST' });
+      setMsg(`${t('res.issuedAll')}: ${r.issued.length} · ${t('res.skipped')}: ${r.skipped}`);
+      refetch();
+      // Wave 7: the registry + medal tables below read the same new rows.
+      qc.invalidateQueries({ queryKey: ['tdocs', String(tid)] });
+      qc.invalidateQueries({ queryKey: ['results', String(tid)] });
+    } catch (e: unknown) { setMsg(`${t('common.err')}: ` + errMsg(e)); }
+    setBusy(false);
+  };
+  const spot = (s: Podium['gold'], place: string) =>
+    s ? <span>{place}. {s.name} <span style={{ color: 'var(--muted)' }}>{s.club}</span></span> : <span>—</span>;
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <h3 className="font-bold flex-1">{t('res.podium')}</h3>
+        {canIssue && <button className="btn-primary text-sm" onClick={bulk} disabled={busy}>{busy ? '…' : t('res.issueAll')}</button>}
+      </div>
+      {msg && <div className="text-sm">{msg}</div>}
+      {data.map((p) => (
+        <div key={p.category_id} className="card p-4 text-sm space-y-1">
+          <div className="font-extrabold">{p.category}</div>
+          <div>🥇 {spot(p.gold, '1')}</div>
+          <div>🥈 {spot(p.silver, '2')}</div>
+          {!!p.bronze.length && <div>🥉 {p.bronze.map((b) => b.name).join(', ')}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function DocsRegistry({ tid }: { tid: string }) {
+  const { t } = useLang();
+  const { data, isLoading, refetch } = useTournamentDocs(tid);
+  if (isLoading) return <Skeleton className="h-24" />;
+  if (!data?.length) return null;
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <h3 className="font-bold flex-1">{t('res.registry')}</h3>
+        <button className="btn-ghost text-xs !py-1.5" onClick={() => refetch()}>{t('common.retry')}</button>
+      </div>
+      <DataTable cols={[t('res.athlete'), t('res.place'), t('res.category'), t('res.diploma')]}
+        rows={data.map((d) => [d.athlete || `#${d.athlete_id}`,
+          d.place || d.kind, d.category || d.template || '—',
+          <a key={d.code} className="underline text-sm font-bold" href={`/api/documents/${d.code}/certificate.pdf`}>{d.code}</a>])} />
     </div>
   );
 }
 
 function DiplomaButton({ tid, athleteId, category }: { tid: string; athleteId: number; category: string }) {
   const { t } = useLang();
+  const qc = useQueryClient();
   const [code, setCode] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -214,6 +287,8 @@ function DiplomaButton({ tid, athleteId, category }: { tid: string; athleteId: n
         `/api/documents/issue?athlete_id=${athleteId}&tournament_id=${tid}&kind=diploma&place=1&category=${encodeURIComponent(category)}`,
         { method: 'POST' });
       setCode(r.code);
+      // Wave 7: the registry below lists the new code.
+      qc.invalidateQueries({ queryKey: ['tdocs', String(tid)] });
     } catch {
       setFailed(true);
     }
@@ -231,6 +306,7 @@ function DiplomaButton({ tid, athleteId, category }: { tid: string; athleteId: n
 export function ReportBlock({ tid }: { tid: string }) {
   const { t, lang } = useLang();
   const { can } = useAuth();
+  const qc = useQueryClient();
   const canPost = can('news.manage');
   const { data, isLoading, isError, refetch } = useReport(tid, lang);
   const [msg, setMsg] = useState('');
@@ -251,6 +327,8 @@ export function ReportBlock({ tid }: { tid: string }) {
         excerpt: `${s.participants} · ${s.fights_finished}/${s.fights_total}`,
         body: data.markdown, category: 'results' }) });
       setMsg('✓');
+      // Wave 7: the news feed reads the same new row.
+      qc.invalidateQueries({ queryKey: ['news'] });
     } catch (e: unknown) { setMsg(`${t('common.err')}: ` + errMsg(e)); }
     setBusy(false);
   };

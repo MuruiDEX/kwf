@@ -23,10 +23,24 @@ def upgrade() -> None:
     insp = sa.inspect(bind)
     existing = {c["name"] for c in insp.get_unique_constraints("brackets")}
     if "uq_bracket_tournament_category" not in existing:
-        op.create_unique_constraint(
-            "uq_bracket_tournament_category", "brackets", ["tournament_id", "category_id"]
-        )
+        if bind.dialect.name == "sqlite":
+            # Wave 8: SQLite has no ALTER ... ADD CONSTRAINT. Batch mode
+            # recreates the table (copy-and-move, data preserved) instead.
+            # PostgreSQL keeps the plain ALTER (valid there).
+            with op.batch_alter_table("brackets") as batch:
+                batch.create_unique_constraint(
+                    "uq_bracket_tournament_category", ["tournament_id", "category_id"]
+                )
+        else:
+            op.create_unique_constraint(
+                "uq_bracket_tournament_category", "brackets", ["tournament_id", "category_id"]
+            )
 
 
 def downgrade() -> None:
-    op.drop_constraint("uq_bracket_tournament_category", "brackets", type_="unique")
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("brackets") as batch:
+            batch.drop_constraint("uq_bracket_tournament_category", type_="unique")
+    else:
+        op.drop_constraint("uq_bracket_tournament_category", "brackets", type_="unique")

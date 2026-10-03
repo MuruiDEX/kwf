@@ -45,16 +45,18 @@ export type RegisterInput = { email: string; password: string; full_name: string
 type AuthCtx = {
   user: Me;
   role: Role;
+  roles: Role[];
   loading: boolean;
   permissions: string[];
   can: (perm: string) => boolean;
+  hasRole: (...rs: Role[]) => boolean;
   refresh: () => void;
   login: (email: string, password: string) => Promise<void>;
   register: (input: RegisterInput) => Promise<void>;
   logout: () => Promise<void>;
 };
 
-const Ctx = createContext<AuthCtx>({ user: null, role: 'public', loading: true, permissions: [], can: () => false, refresh: () => {}, login: async () => {}, register: async () => {}, logout: async () => {} });
+const Ctx = createContext<AuthCtx>({ user: null, role: 'public', roles: ['public'], loading: true, permissions: [], can: () => false, hasRole: () => false, refresh: () => {}, login: async () => {}, register: async () => {}, logout: async () => {} });
 
 export const useAuth = () => useContext(Ctx);
 
@@ -75,7 +77,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     enabled: !!user,
   });
   const permissions: string[] = user ? (permData?.permissions ?? []) : [];
+  // Multi-role: backend returns the roles SET (primary + secondaries); the
+  // primary `role` stays for display/backward compatibility. UI context
+  // (cabinet switcher) never changes these — authorization stays server-side.
+  const roles: Role[] = user
+    ? [...new Set([...(user.roles ?? []), user.role])] as Role[]
+    : ['public'];
   const can = useCallback((perm: string) => permissions.includes(perm), [permissions]);
+  const hasRole = useCallback((...rs: Role[]) => rs.some((r) => roles.includes(r)), [roles]);
 
   // A 401 from any non-auth endpoint means the session died mid-use
   // (expiry, logout in another tab): drop stale identity immediately.
@@ -111,7 +120,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider value={{
-      user, role: user?.role ?? 'public', loading: isLoading, permissions, can,
+      user, role: user?.role ?? 'public', roles, loading: isLoading, permissions, can, hasRole,
       refresh: () => { void refetch(); }, login, register, logout,
     }}>
       {children}
@@ -120,14 +129,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 }
 
 // ---------- route guard: frontend hint only, backend stays source of truth ----------
-// Access = (no roles required OR role matches OR admin) AND (no perm required OR has perm).
+// Access = (no roles required OR any required role held OR admin) AND (no perm required OR has perm).
 export function RequireRole({ roles, perm, children }: { roles?: Role[]; perm?: string; children: JSX.Element }) {
-  const { user, role, loading, can } = useAuth();
+  const { user, loading, can, hasRole } = useAuth();
   const loc = useLocation();
   const { t } = useLang();
+  const isAdmin = hasRole('admin');
   if (loading) return <Skeleton className="h-60" />;
   if (!user) return <Navigate to="/me" state={{ from: loc.pathname }} replace />;
-  if (roles && !roles.includes(role) && role !== 'admin') {
+  if (roles && !hasRole(...roles) && !isAdmin) {
     // Permission holders may pass role-only gates when the page is perm-aware.
     if (!(perm && can(perm))) {
       return (
@@ -138,7 +148,7 @@ export function RequireRole({ roles, perm, children }: { roles?: Role[]; perm?: 
       );
     }
   }
-  if (perm && !can(perm) && role !== 'admin') {
+  if (perm && !can(perm) && !isAdmin) {
     return (
       <div className="card p-8 text-center max-w-md mx-auto fade-up space-y-2">
         <div className="font-bold text-lg">{t('auth.denied')}</div>

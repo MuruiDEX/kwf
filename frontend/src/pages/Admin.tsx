@@ -143,26 +143,38 @@ function AdminNews() {
 const ROLES = ['public', 'athlete', 'coach', 'referee', 'organizer', 'admin'];
 function UserEditor({ id, onClose }: { id: number; onClose: () => void }) {
   const { t } = useLang();
-  const { user: me } = useAuth();
+  const { user: me, hasRole } = useAuth();
   const { data: u, isLoading, isError } = useAdminUserDetail(id);
-  const { data: catalog } = usePermCatalog(me?.role === 'admin');
+  const { data: catalog } = usePermCatalog(hasRole('admin'));
   const upd = useUpdateUser();
   const [role, setRole] = useState<string | null>(null);
   const [active, setActive] = useState<boolean | null>(null);
   const [grants, setGrants] = useState<string[] | null>(null);
+  const [extraRoles, setExtraRoles] = useState<Role[] | null>(null);
   const [msg, setMsg] = useState('');
   const curRole = role ?? u?.role ?? '';
   const curActive = active ?? u?.is_active ?? true;
   const curGrants = grants ?? u?.grants ?? [];
+  // Secondary roles (primary excluded — change it via the role select above).
+  const SECONDARIES: Role[] = ['coach', 'organizer', 'referee', 'athlete'];
+  const baseRoles = extraRoles ?? (u?.roles ?? []).filter((r) => r !== (u?.role ?? ''));
   const isSelf = me?.id === id;
   const save = async () => {
     setMsg('');
     try {
+      const newPrimary = role ?? u?.role ?? '';
+      const prevRoles = u?.roles ?? [];
       await upd.mutateAsync({ id, patch: {
         ...(role != null && u && role !== u.role ? { role } : {}),
         ...(active != null && u && active !== u.is_active ? { is_active: active } : {}),
         add_permissions: (grants ?? u?.grants ?? []).filter((g) => !(u?.grants ?? []).includes(g)),
         remove_permissions: (u?.grants ?? []).filter((g) => !(grants ?? u?.grants ?? []).includes(g)),
+        // Secondary set: checked boxes minus anything already held, plus the
+        // previous primary when it changes (a demoted primary stays available
+        // instead of silently vanishing from the set).
+        add_roles: [...baseRoles.filter((r) => !prevRoles.includes(r)),
+                    ...((u && role != null && role !== u.role && !baseRoles.includes(u.role)) ? [u.role] : [])],
+        remove_roles: prevRoles.filter((r) => r !== newPrimary && !baseRoles.includes(r)),
       } });
       notify(t('adm.saved'), 'ok');
       onClose();
@@ -193,6 +205,23 @@ function UserEditor({ id, onClose }: { id: number; onClose: () => void }) {
         </label>
       </div>
       <div className="space-y-2">
+        <div className="font-bold text-sm">{t('adm.roles')}</div>
+        <p className="text-xs" style={{ color: 'var(--muted)' }}>{t('adm.rolesHint')}</p>
+        <div className="flex flex-wrap gap-1.5">
+          {SECONDARIES.map((r) => {
+            const isPrimary = (role ?? u?.role) === r;
+            const checked = isPrimary || baseRoles.includes(r);
+            return (
+              <label key={r} className="flex items-center gap-2 text-sm card px-3 py-1.5" style={{ opacity: isPrimary ? .75 : 1 }}>
+                <input type="checkbox" checked={checked} disabled={isPrimary}
+                  onChange={(e) => setExtraRoles(baseRoles.filter((x) => x !== r).concat(e.target.checked ? [r] : []))} />
+                <span className="font-semibold">{t(`role.${r}`)}{isPrimary ? ` · ${t('adm.primary')}` : ''}</span>
+              </label>
+            );
+          })}
+        </div>
+      </div>
+      <div className="space-y-2">
         <div className="font-bold text-sm">{t('adm.grants')}</div>
         <p className="text-xs" style={{ color: 'var(--muted)' }}>{t('adm.grantsHint')}</p>
         {Object.entries(groups).map(([g, items]) => (
@@ -200,7 +229,8 @@ function UserEditor({ id, onClose }: { id: number; onClose: () => void }) {
             <legend className="text-xs font-extrabold uppercase tracking-wider px-1" style={{ color: 'var(--muted)' }}>{t(`perm.g.${g}`)}</legend>
             <div className="grid sm:grid-cols-2 gap-1.5">
               {(items ?? []).map((p) => {
-                const byRole = (u.role === 'admin') || (catalog ?? []).find((c) => c.key === p.key)?.roles.includes(u.role as Role);
+                const heldRoles = new Set([u.role, ...(u.roles ?? [])]);
+                const byRole = heldRoles.has('admin') || (catalog ?? []).find((c) => c.key === p.key)?.roles.some((r) => heldRoles.has(r as Role));
                 const checked = byRole || curGrants.includes(p.key);
                 return (
                   <label key={p.key} className="flex items-center gap-2 text-sm py-1" style={{ opacity: !p.grantable || byRole ? .75 : 1 }}>
@@ -227,8 +257,8 @@ function UserEditor({ id, onClose }: { id: number; onClose: () => void }) {
 
 export function UsersDirectory() {
   const { t } = useLang();
-  const { role } = useAuth();
-  const canEdit = role === 'admin';
+  const { hasRole } = useAuth();
+  const canEdit = hasRole('admin');
   const [q, setQ] = useState('');
   const [roleF, setRoleF] = useState('');
   const [editId, setEditId] = useState<number | null>(null);
@@ -248,7 +278,7 @@ export function UsersDirectory() {
           rows={data.slice(0, 100).map((u) => [u.id,
             <span key={u.id} className="break-all">{u.email}</span>, u.full_name || '—',
             <span key={u.id} className="flex items-center gap-1.5 flex-wrap">
-              <Badge tone={u.role === 'admin' ? 'navy' : u.role === 'organizer' ? 'gold' : 'gray'}>{t(`role.${u.role}`)}</Badge>
+              <Badge tone={u.role === 'admin' ? 'navy' : u.role === 'organizer' ? 'gold' : 'gray'}>{t(`role.${u.role}`)}{(u.roles ?? []).filter((r) => r !== u.role).map((r) => ` +${t(`role.${r}`)}`).join('')}</Badge>
               {(u.grants ?? []).length > 0 && <Badge tone="gold">+{u.grants!.length}</Badge>}
             </span>,
             u.is_active ? t('adm.active') : t('adm.blocked'),

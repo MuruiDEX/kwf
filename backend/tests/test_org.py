@@ -25,9 +25,13 @@ def test_request_approve_flow():
     assert any(x["org_name"] == "My Club Org" for x in reqs)
     rid = [x for x in reqs if x["org_name"] == "My Club Org"][0]["id"]
     assert client.post(f"/api/admin/organizer-requests/{rid}/decision", params={"approve": True}, headers=admin).json()["status"] == "approved"
-    # upgraded: can manage tournaments
+    # upgraded: coach keeps primary role AND gains organizer (multi-role,
+    # additive — club/athletes intact), can manage tournaments
     me = client.get("/api/auth/me", headers=coach).json()
-    assert me["role"] == "organizer"
+    assert me["role"] == "coach"
+    assert set(("coach", "organizer")) <= set(me["roles"])
+    perms = client.get("/api/auth/permissions", headers=coach).json()["permissions"]
+    assert "tournaments.create" in perms and "tournaments.manage" in perms
     r = client.post("/api/tournaments", json={"name": "Approved Cup", "start_date": "2026-12-01"}, headers=coach)
     assert r.status_code == 200, r.text
     # coach without approval still cannot

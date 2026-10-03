@@ -1,4 +1,5 @@
 import { Link, useNavigate } from 'react-router-dom';
+import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { FilePlus2, Trophy, Bell, Scale, FileCheck2, ShieldCheck, Users, User as UserIcon, LogOut, type LucideIcon } from 'lucide-react';
 import { useLang } from '../i18n';
@@ -6,7 +7,10 @@ import { api, errMsg, pageItems } from '../lib/api';
 import { useAuth, notify } from '../auth';
 import { Badge, Skeleton } from '../components/ui/core';
 import { OrgRequestForm } from './AuthForms';
-import { useNotes, useTournaments, useMyAthletes, useMyClubs } from '../lib/queries';
+import { SpravkiSection } from './Spravki';
+import { BulkRegSection } from './BulkReg';
+import { ScheduleSection } from './Schedule';
+import { useNotes, useTournaments, useMyAthletes, useMyClubs, useMyRegistrations } from '../lib/queries';
 import type { Athlete, Club, KwfNotification, Tournament } from '../types/api';
 
 function Action({ to, icon: Icon, label, hint }: { to: string; icon: LucideIcon; label: string; hint: string }) {
@@ -23,20 +27,25 @@ function Action({ to, icon: Icon, label, hint }: { to: string; icon: LucideIcon;
   );
 }
 
-export function Cabinet() {
+export function Cabinet({ coachOnly = false }: { coachOnly?: boolean } = {}) {
   const { t } = useLang();
-  const { user, role, can, logout } = useAuth();
+  const { user, roles, can, hasRole, logout } = useAuth();
   const nav = useNavigate();
   const qc = useQueryClient();
 
   const { data: tournamentsRaw } = useTournaments('', '', { enabled: !!user });
   const { data: notes } = useNotes(!!user);
   const tournaments: Tournament[] = pageItems(tournamentsRaw);
-  const isCoach = role === 'coach';
+  const isCoach = hasRole('coach');
+  const isAthlete = hasRole('athlete');
   const { data: myAthletesRaw } = useMyAthletes(!!user && (isCoach || can('athletes.manage')));
   const { data: myClubsRaw } = useMyClubs(!!user && (isCoach || can('clubs.manage')));
   const myAthletes: Athlete[] = pageItems(myAthletesRaw);
   const myClubs: Club[] = pageItems(myClubsRaw);
+  // Cabinet switcher (UI context only — never touches role/permissions).
+  // Default 'all' renders exactly the historical cabinet (E2E-safe).
+  const [view, setView] = useState<'all' | 'coach' | 'organizer'>('all');
+  const effView = coachOnly ? 'coach' : view;
 
   if (!user) return null;
   const mine = tournaments.filter((x) => x.created_by === user.id);
@@ -47,6 +56,10 @@ export function Cabinet() {
   // plain can() check already includes them — the old role!=='admin' exclusion
   // hid /admin/users from admins while the route itself allowed them.
   const canSeeUsers = can('users.view');
+  // Switcher visibility: user genuinely spans both contexts.
+  const showSwitcher = !coachOnly && isCoach && canOrganize;
+  const showCoach = effView === 'all' ? true : effView === 'coach';
+  const showOrg = effView === 'all' ? true : effView === 'organizer';
 
   const out = async () => {
     await logout();
@@ -54,10 +67,10 @@ export function Cabinet() {
     nav('/me', { replace: true });
   };
   const readAll = async () => {
-    const items: KwfNotification[] = (notes?.items ?? []).filter((n) => !n.is_read);
+    // Wave 7: single atomic endpoint (was up to 20 parallel POSTs, silently
+    // leaving the rest unread past the slice).
     try {
-      await Promise.all(items.slice(0, 20).map((n) =>
-        api(`/api/notifications/${n.id}/read`, { method: 'POST' }).catch(() => undefined)));
+      await api('/api/notifications/read-all', { method: 'POST' });
     } finally {
       qc.invalidateQueries({ queryKey: ['notes'] });
     }
@@ -83,13 +96,26 @@ export function Cabinet() {
           <div className="min-w-0 flex-1">
             <div className="font-extrabold leading-tight break-words">{user.full_name || '—'}</div>
             <div className="text-sm break-all" style={{ color: 'var(--muted)' }}>{user.email}</div>
-            <div className="mt-1"><Badge tone="gold">{t(`role.${role}`)}</Badge></div>
+            <div className="mt-1 flex gap-1 flex-wrap">{roles.map((r) => (
+              <Badge key={r} tone="gold">{t(`role.${r}`)}</Badge>
+            ))}</div>
           </div>
           <button className="btn-ghost text-sm !py-2" onClick={out}>
             <LogOut size={15} /> {t('me.out')}
           </button>
         </div>
       </section>
+
+      {/* cabinet switcher (UI context only — permissions untouched) */}
+      {showSwitcher && (
+        <div className="tabs" role="tablist" aria-label={t('cab.view')}>
+          {(['all', 'coach', 'organizer'] as const).map((v) => (
+            <button key={v} className="tab" role="tab" aria-selected={effView === v} onClick={() => setView(v)}>
+              {t(`cab.view_${v}`)}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* stats (only real data) */}
       <section className="grid grid-cols-2 gap-3" aria-label="stats">
@@ -109,8 +135,8 @@ export function Cabinet() {
       <section aria-label={t('me.actions')}>
         <h2 className="font-bold mb-2">{t('me.actions')}</h2>
         <div className="grid sm:grid-cols-2 gap-3">
-          {canOrganize && <Action to="/organizer" icon={Trophy} label={t('me.newT')} hint={t('org.title')} />}
-          {canOrganize && <Action to="/news/new" icon={FilePlus2} label={t('me.newN')} hint={t('nav.news')} />}
+          {showOrg && canOrganize && <Action to="/organizer" icon={Trophy} label={t('me.newT')} hint={t('org.title')} />}
+          {showOrg && canOrganize && <Action to="/news/new" icon={FilePlus2} label={t('me.newN')} hint={t('nav.news')} />}
           {canJudge && <Action to="/referee" icon={Scale} label={t('me.judge')} hint={t('cmdk.referee')} />}
           <Action to="/verify" icon={FileCheck2} label={t('me.checkDoc')} hint={t('v.sub')} />
           {can('roles.manage') && <Action to="/admin" icon={ShieldCheck} label={t('me.adminT2')} hint={t('me.adminT')} />}
@@ -119,7 +145,7 @@ export function Cabinet() {
       </section>
 
       {/* coach: my athletes & clubs */}
-      {(isCoach || (can('athletes.manage') && myAthletes.length > 0)) && (
+      {showCoach && (isCoach || (can('athletes.manage') && myAthletes.length > 0)) && (
         <section className="space-y-3" aria-label={t('coach.myAthletes')}>
           <h2 className="font-bold">{t('coach.myAthletes')}</h2>
           <div className="card p-5 space-y-2">
@@ -144,6 +170,18 @@ export function Cabinet() {
         </section>
       )}
 
+      {/* spravki (Wave 1): coach/organizer documents, data reused from above */}
+      {showCoach && (isCoach || can('athletes.manage')) && <SpravkiSection athletes={myAthletes} />}
+
+      {/* my applications (Wave 4): athlete sees own regs with statuses */}
+      {isAthlete && <MyApplications />}
+
+      {/* bulk registration (Wave 2): coach registers own athletes in one go */}
+      {showCoach && (isCoach || can('athletes.manage')) && <BulkRegSection athletes={myAthletes} tournaments={tournaments} />}
+
+      {/* training schedule: coach's own clubs (club ownership, any primary role) */}
+      {showCoach && (hasRole('coach') || hasRole('admin')) && <ScheduleSection clubs={myClubs} />}
+
       {/* activity */}
       <section className="space-y-3" aria-label={t('me.activity')}>
         <h2 className="font-bold">{t('me.activity')}</h2>
@@ -152,7 +190,7 @@ export function Cabinet() {
           {!tournaments ? <Skeleton className="h-16" /> :
             !mine.length ? (
               <div className="text-sm" style={{ color: 'var(--muted)' }}>
-                {t('me.noT')}. {canOrganize && <Link to="/organizer" className="underline">{t('me.goOrg')}</Link>}
+                {t('me.noT')}. {showOrg && canOrganize && <Link to="/organizer" className="underline">{t('me.goOrg')}</Link>}
               </div>
             ) : mine.slice(0, 5).map((x) => (
               <Link key={x.id} to={`/tournaments/${x.id}`} className="flex items-center gap-2 text-sm font-semibold py-1">
@@ -176,12 +214,54 @@ export function Cabinet() {
       </section>
 
       {/* organizer request only for non-organizers */}
-      {!canOrganize && (
+      {showOrg && !canOrganize && (
         <section className="card p-5 space-y-3" aria-label={t('me.reqT')}>
           <h2 className="font-bold">{t('me.reqT')}</h2>
           <OrgRequestForm />
         </section>
       )}
     </div>
+  );
+}
+
+// Wave 4: athlete's own applications with statuses + withdraw.
+function MyApplications() {
+  const { t } = useLang();
+  const { data: regs, isLoading, refetch } = useMyRegistrations();
+  const [msg, setMsg] = useState<string>('');
+  const [busyId, setBusyId] = useState<number | null>(null);
+  if (isLoading) return <Skeleton className="h-24" />;
+  if (!regs?.length) return null;
+  const drop = async (r: { id: number; tournament_id: number }) => {
+    setBusyId(r.id);
+    setMsg('');
+    try {
+      await api(`/api/tournaments/${r.tournament_id}/registrations/${r.id}/status`, {
+        method: 'POST', body: JSON.stringify({ status: 'withdrawn' }),
+      });
+      setMsg('✓');
+      refetch();
+    } catch (e: unknown) { setMsg(`${t('common.err')}: ` + errMsg(e)); }
+    setBusyId(null);
+  };
+  return (
+    <section className="space-y-3" aria-label={t('myreg.title')}>
+      <h2 className="font-bold">{t('myreg.title')}</h2>
+      <div className="card p-5 space-y-2">
+        {(regs ?? []).map((r) => (
+          <div key={r.id} className="text-sm flex items-center gap-2">
+            <Link to={`/tournaments/${r.tournament_id}`} className="font-semibold flex-1 truncate">
+              {r.tournament} · {r.category}
+            </Link>
+            <Badge tone={r.reg_status === 'approved' ? 'gold' : 'gray'}>{t(`rg.${r.reg_status}`)}</Badge>
+            {(r.reg_status === 'approved' || r.reg_status === 'pending') && r.status !== 'live' && r.status !== 'finished' && (
+              <button className="btn-ghost text-xs !py-1" disabled={busyId === r.id}
+                      onClick={() => drop(r)}>{busyId === r.id ? '…' : t('self.withdraw')}</button>
+            )}
+          </div>
+        ))}
+        {msg && <div className="text-sm">{msg}</div>}
+      </div>
+    </section>
   );
 }

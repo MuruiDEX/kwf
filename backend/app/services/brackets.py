@@ -1,7 +1,8 @@
 """Bracket generation + atomic fight finalization."""
 from __future__ import annotations
 from sqlalchemy.orm import Session
-from app.models.competition import Bracket, BracketMatch
+from app.models.competition import Bracket, BracketMatch, Registration
+from app.models.club_athlete import Athlete
 from app.services.seeding import assign_seeds, next_power_of_two
 
 def generate_bracket(db: Session, tournament_id: int, category_id: int, athlete_ids_by_strength: list[int]) -> Bracket:
@@ -59,6 +60,68 @@ def generate_bracket(db: Session, tournament_id: int, category_id: int, athlete_
 
 class MatchConflict(ValueError):
     """Correction blocked: a downstream fight is already finished."""
+
+
+class CorrectionRejected(ValueError):
+    """Correction violates a bracket invariant (safe refusal, caller maps to 409)."""
+
+
+def correct_match(
+    db: Session, match_id: int, athlete_a_id: int, athlete_b_id: int
+) -> tuple[BracketMatch, Bracket, dict]:
+    """Wave 6: controlled correction of ONE pending first-round pair.
+
+    Scope (anything else -> CorrectionRejected, never silent magic):
+    - match must exist, be status "scheduled", round 1, with NO result
+      (no winner, zeroed scores). Finished/live/bye are all refused:
+      bye winners were already propagated downstream at generation.
+    - only round 1: deeper matches fill via propagation; writing them
+      directly would later be shadowed or block legitimate propagation.
+    - both athletes must exist and hold an APPROVED registration in the
+      bracket's (tournament, category) — same membership rule as generation.
+    - a != b, and neither may appear in ANY other match of this bracket
+      (as participant or winner) — no double-booking, no downstream clash.
+    - nothing downstream is touched: R1 matches propagate nothing yet
+      (winner is None), so no orphaning is possible by construction.
+
+    Flushes only; the caller commits once together with the audit row.
+    Returns (match, bracket, {"old_a", "old_b"}) for the audit trail.
+    """
+    m = db.get(BracketMatch, match_id)
+    if not m:
+        raise ValueError("Match not found")
+    if m.status != "scheduled":
+        raise CorrectionRejected(f"Match is {m.status}: only scheduled pairs can be corrected")
+    if m.round_no != 1:
+        raise CorrectionRejected("Only first-round pairs can be corrected")
+    if m.winner_id is not None or (m.score_a or 0) != 0 or (m.score_b or 0) != 0:
+        raise CorrectionRejected("Match already has a result")
+    if athlete_a_id == athlete_b_id:
+        raise CorrectionRejected("Participants must differ")
+    b = db.get(Bracket, m.bracket_id)
+    if not b:
+        raise ValueError("Match not found")
+    for aid in (athlete_a_id, athlete_b_id):
+        if not db.get(Athlete, aid):
+            raise ValueError(f"Unknown athlete {aid}")
+        reg = db.query(Registration).filter_by(
+            tournament_id=b.tournament_id, category_id=b.category_id,
+            athlete_id=aid, status="approved").first()
+        if not reg:
+            raise CorrectionRejected(f"Athlete {aid} is not approved in this category")
+    others = db.query(BracketMatch).filter(
+        BracketMatch.bracket_id == b.id, BracketMatch.id != m.id).all()
+    taken: set[int] = set()
+    for o in others:
+        taken.update(x for x in (o.athlete_a_id, o.athlete_b_id, o.winner_id) if x)
+    clash = {athlete_a_id, athlete_b_id} & taken
+    if clash:
+        raise CorrectionRejected(f"Athlete {sorted(clash)[0]} already placed elsewhere in this bracket")
+    old = {"old_a": m.athlete_a_id, "old_b": m.athlete_b_id}
+    m.athlete_a_id, m.athlete_b_id = athlete_a_id, athlete_b_id
+    db.flush()
+    db.refresh(m)
+    return m, b, old
 
 
 def finish_fight(

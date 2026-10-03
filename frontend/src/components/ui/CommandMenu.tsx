@@ -12,7 +12,7 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
   const { t } = useLang();
   const [q, setQ] = useState('');
   const [res, setRes] = useState<SearchResult | null>(null);
-  const { role, can } = useAuth();
+  const { hasRole, can } = useAuth();
   const [idx, setIdx] = useState(0);
   const nav = useNavigate();
   const qc = useQueryClient();
@@ -68,10 +68,11 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
     const needle = q.toLowerCase();
     // P1: role-gated actions also pass for direct permission holders (grants),
     // so UI hints stay consistent with the backend (which stays source of truth).
+    // Multi-role: any held role counts.
     const visible = (a: Action) =>
-      (!a.roles || a.roles.includes(role) || role === 'admin' || (a.perm !== undefined && can(a.perm)));
+      (!a.roles || hasRole(...a.roles) || hasRole('admin') || (a.perm !== undefined && can(a.perm)));
     return list.filter(a => visible(a) && (!needle || a.label.toLowerCase().includes(needle)));
-  }, [q, role, tid, t, can]);
+  }, [q, tid, t, can, hasRole]);
 
   if (!open) return null;
   const onKey = (e: React.KeyboardEvent) => {

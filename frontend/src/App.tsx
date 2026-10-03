@@ -11,8 +11,10 @@ import { TournamentDetail } from './pages/TournamentDetail';
 import { Athletes, AthleteDetail, Rankings, Clubs, ClubDetail, LiveAll } from './pages/Lists';
 import { TvBoard, Referee } from './pages/TvReferee';
 import { Organizer, Auth } from './pages/Organizer';
+import { Cabinet } from './pages/Cabinet';
 import { Admin, UsersDirectory } from './pages/Admin';
 import { Verify, News, NewsDetail, NewsEditor } from './pages/Documents';
+import { Notifications } from './pages/Notifications';
 
 const qc = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1, refetchOnWindowFocus: false } },
@@ -88,7 +90,9 @@ export default function App() {
               <Route path="/tv/:id" element={<TvBoard />} />
               <Route path="/referee" element={<RequireRole roles={['referee', 'organizer']}><Referee /></RequireRole>} />
               <Route path="/organizer" element={<RequireRole perm="tournaments.manage"><Organizer /></RequireRole>} />
+              <Route path="/coach" element={<RequireRole roles={['coach']}><Cabinet coachOnly /></RequireRole>} />
               <Route path="/me" element={<Auth />} />
+              <Route path="/notifications" element={<Notifications />} />
               <Route path="/admin/users" element={<RequireRole perm="users.view"><UsersDirectory /></RequireRole>} />
               <Route path="/dashboard" element={<Navigate to="/me" replace />} />
               <Route path="/login" element={<Navigate to="/me" replace />} />

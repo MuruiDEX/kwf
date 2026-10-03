@@ -8,6 +8,9 @@ const API = 'http://127.0.0.1:8000';
 
 async function apiLogin(request: APIRequestContext, email: string, password: string): Promise<string> {
   const r = await request.post(`${API}/api/auth/login`, { data: { email, password } });
+  if (!r.ok()) {
+    console.log('LOGIN FAILED:', email, r.status(), await r.text());
+  }
   expect(r.ok()).toBeTruthy();
   const j = await r.json();
   return j.token as string;
@@ -38,20 +41,34 @@ test('tournament lifecycle in the UI', async ({ page, request }) => {
   const tid = page.url().match(/\/tournaments\/(\d+)/)![1];
 
   // 3. category + athletes + registrations via API (no UI forms exist)
-  const cat = await (await request.post(`${API}/api/tournaments/${tid}/categories`, {
+  const catRes = await request.post(`${API}/api/tournaments/${tid}/categories`, {
     headers: H,
     data: { name: 'M70', gender: 'male', age_min: 18, age_max: 40, weight_min: 60, weight_max: 70 },
-  })).json();
+  });
+  if (!catRes.ok()) {
+    console.log('CATEGORY FAILED:', catRes.status(), await catRes.text());
+  }
+  expect(catRes.ok()).toBeTruthy();
+  const cat = await catRes.json();
   const aids: number[] = [];
   for (let i = 0; i < 4; i++) {
-    const a = await (await request.post(`${API}/api/athletes`, {
+    const aRes = await request.post(`${API}/api/athletes`, {
       headers: H,
       data: { first_name: 'PW', last_name: `Fighter${i}`, gender: 'male', birth_year: 2000, weight_kg: 68, country: 'KZ' },
-    })).json();
+    });
+    if (!aRes.ok()) {
+      console.log('ATHLETE FAILED:', aRes.status(), await aRes.text());
+    }
+    expect(aRes.ok()).toBeTruthy();
+    const a = await aRes.json();
     aids.push(a.id);
-    await request.post(`${API}/api/tournaments/${tid}/registrations`, {
+    const regRes = await request.post(`${API}/api/tournaments/${tid}/registrations`, {
       headers: H, data: { athlete_id: a.id, category_id: cat.id },
     });
+    if (!regRes.ok()) {
+      console.log('REG FAILED:', regRes.status(), await regRes.text());
+    }
+    expect(regRes.ok()).toBeTruthy();
   }
 
   // 4. weigh-in via UI (first row)
@@ -63,6 +80,14 @@ test('tournament lifecycle in the UI', async ({ page, request }) => {
   // 5. brackets + schedule via UI overview buttons
   await page.goto(`/tournaments/${tid}?tab=overview`);
   await page.getByRole('button', { name: 'Сгенерировать сетки' }).click();
+  // State-based wait (not a sleep): the generate POST is fire-and-forget from
+  // the UI, and an immediate navigation can abort it in-flight. Poll the API
+  // until the bracket actually lands, then assert the rendered UI as before.
+  await expect.poll(async () => {
+    const r = await request.get(`${API}/api/tournaments/${tid}/brackets`);
+    const j = await r.json();
+    return Array.isArray(j) ? j.length : 0;
+  }, { timeout: 15000 }).toBeGreaterThan(0);
   await page.goto(`/tournaments/${tid}?tab=brackets`);
   await expect(page.getByText('олимпийская система').first()).toBeVisible();
   await expect(page.getByText('Финал').first()).toBeVisible();

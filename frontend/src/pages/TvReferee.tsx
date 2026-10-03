@@ -1,9 +1,10 @@
 import { useParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useLang } from '../i18n';
-import { ApiError, api, errMsg, useLiveSSE } from '../lib/api';
-import { useLiveState } from '../lib/queries';
-import type { FinishResult, LiveEvent, LiveFight, TimerState } from '../types/api';
+import { ApiError, api, errMsg, pageItems, useLiveSSE } from '../lib/api';
+import { useLiveState, useTournamentsLive, useMyAssignments } from '../lib/queries';
+import type { FinishResult, LiveEvent, LiveFight, MyAssignment, TimerState, Tournament } from '../types/api';
 
 /** Partial timer view: SSE events carry only changed fields. */
 type TimerView = {
@@ -52,6 +53,7 @@ export function TvBoard() {
 // Referee mode: big buttons, minimal text (§14) — timer + score + finish wired to API
 export function Referee() {
   const { t } = useLang();
+  const qc = useQueryClient();
   const [tid, setTid] = useState('1');
   const [mid, setMid] = useState('');
   const [dur, setDur] = useState(180);
@@ -63,6 +65,21 @@ export function Referee() {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const hasMid = mid.trim().length > 0;
+  // Wave 2: referee queue — live tournaments + their fights with real names.
+  // Tapping a fight selects it (no manual ID needed); manual inputs stay as
+  // fallback (E2E and edge cases). Permissions unchanged: finish/timer guards
+  // still enforced server-side per match.
+  const { data: liveTournamentsRaw } = useTournamentsLive();
+  const liveTournaments: Tournament[] = pageItems(liveTournamentsRaw);
+  const { data: liveSnap } = useLiveState(tid || undefined);
+  const queue: LiveFight[] = [...(liveSnap?.live ?? []), ...(liveSnap?.queue ?? [])];
+  const cur = queue.find((x) => String(x.id) === mid.trim());
+  const pick = (id: number) => { setMid(String(id)); setWinner(null); setConfirming(false); setMsg(''); };
+  // Wave 3: my tatami assignments — filter the queue to assigned tatamis.
+  const { data: myAssign } = useMyAssignments();
+  const [onlyMine, setOnlyMine] = useState(false);
+  const myTatamis: number[] = (myAssign ?? []).map((a) => a.tatami_id);
+  const shown = onlyMine && myTatamis.length ? queue.filter((f) => f.tatami_id != null && myTatamis.includes(f.tatami_id)) : queue;
   useLiveSSE(tid || null, ev => { if (ev.type === 'timer' && String(ev.match_id) === mid) setTimer(ev); }, !!tid);
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const tt = setInterval(() => setNow(Date.now()), 500); return () => clearInterval(tt); }, []);
@@ -92,6 +109,8 @@ export function Referee() {
       if (!m) { setMsg(`${t('common.err')}: ` + t('ref.noFight')); return; }
       const wid = winner === 'A' ? m.a : m.b;
       const r = await api<FinishResult>(`/api/tournaments/matches/${mid}/finish`, { method: 'POST', body: JSON.stringify({ winner_id: wid, score_a: scoreA, score_b: scoreB }) });
+      // Wave 7: refresh the queue snapshot (the finished fight leaves it).
+      qc.invalidateQueries({ queryKey: ['live', String(tid)] });
       // P0 correction semantics surfaced, never a stack trace.
       setMsg(r.outcome === 'repeated' ? t('ref.repeated') : r.outcome === 'corrected' ? t('ref.corrected') : t('ref.done'));
       setConfirming(false);
@@ -107,6 +126,51 @@ export function Referee() {
     <div className="space-y-4 max-w-lg mx-auto fade-up">
       <div><span className="eyebrow">{t('ref.eyebrow')}</span>
         <h1 className="display text-3xl font-semibold mt-1">{t('ref.title')}</h1></div>
+      {!!(myAssign ?? []).length && (
+        <div className="card p-3 space-y-1 text-sm" aria-label={t('ref.myAssign')}>
+          <div className="text-xs font-extrabold uppercase tracking-[.12em]" style={{ color: 'var(--muted)' }}>{t('ref.myAssign')}</div>
+          {(myAssign ?? []).map((a: MyAssignment) => (
+            <button key={a.tatami_id} className="block w-full text-left font-semibold"
+                    onClick={() => setTid(String(a.tournament_id))}>
+              {a.tournament} · {a.tatami} · {t('lv.next')}: {a.fights.length}
+            </button>
+          ))}
+        </div>
+      )}
+      {!!liveTournaments.length && (
+        <select aria-label={t('ref.pickT')} className="field w-full" value={tid}
+                onChange={(e) => setTid(e.target.value)}>
+          {!liveTournaments.some((x) => String(x.id) === tid) && <option value={tid}>#{tid}</option>}
+          {liveTournaments.map((x) => <option key={x.id} value={String(x.id)}>#{x.id} · {x.name}</option>)}
+        </select>
+      )}
+      {!!queue.length && (
+        <div className="card p-3 space-y-1" aria-label={t('ref.queue')}>
+          <div className="flex items-center gap-2">
+            <div className="text-xs font-extrabold uppercase tracking-[.12em] flex-1" style={{ color: 'var(--muted)' }}>{t('ref.queue')}</div>
+            {!!myTatamis.length && (
+              <label className="text-xs font-bold flex items-center gap-1">
+                <input type="checkbox" checked={onlyMine} onChange={(e) => setOnlyMine(e.target.checked)} />
+                {t('ref.onlyMine')}
+              </label>
+            )}
+          </div>
+          {shown.slice(0, 8).map((f) => (
+            <button key={f.id} onClick={() => pick(f.id)} aria-pressed={String(f.id) === mid.trim()}
+                    className="flex w-full items-center gap-2 px-2 py-1.5 rounded-lg text-sm font-semibold text-left"
+                    style={String(f.id) === mid.trim() ? { background: 'var(--accent-soft)' } : {}}>
+              <span className="text-xs" style={{ color: 'var(--muted)' }}>#{f.id}{f.tatami_id ? ` · T${f.tatami_id}` : ''}</span>
+              <span className="truncate">{f.a_name ?? `#${f.a}`} — {f.b_name ?? `#${f.b}`}</span>
+              {f.status === 'live' && <span className="badge badge-live ml-auto">live</span>}
+            </button>
+          ))}
+        </div>
+      )}
+      {cur && (
+        <div className="text-sm font-bold" aria-live="polite">
+          #{cur.id}: {cur.a_name ?? 'Aka'} — {cur.b_name ?? 'Shiro'}
+        </div>
+      )}
       <div className="flex gap-2">
         <input aria-label={t('ref.tid')} className="field w-24" value={tid} onChange={e => setTid(e.target.value)} inputMode="numeric" />
         <input aria-label={t('ref.mid')} className="field flex-1" placeholder={t('ref.mid')} value={mid} onChange={e => setMid(e.target.value)} inputMode="numeric" />

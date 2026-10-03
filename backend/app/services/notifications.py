@@ -1,14 +1,57 @@
-"""Minimal notifications (§25): only conflicts, weigh-in issues, published results."""
+"""Wave 1: event -> in-app Notification layer (extensible to channels later).
+
+Design: business code calls `emit_event(db, event, ...)` with recipients
+resolved HERE (owner/coach/applicant). Delivery today is in-app rows only.
+Future Telegram/email/push plug in at ONE seam: replace/augment the
+`_deliver()` call inside `emit_event` with channel dispatchers taking
+(event, user_ids, message, link) — no business-logic rewrite needed.
+No dummy dispatcher classes are created until a real provider exists.
+"""
 from __future__ import annotations
 from sqlalchemy.orm import Session
+from app.models.club_athlete import Athlete, Club
 from app.models.tournament import Tournament
 from app.models.competition import Registration
 from app.models.misc import Notification
+from app.models.user import User
 from app.services.schedule import detect_conflicts
 
 def _owner_id(db: Session, tournament_id: int) -> int | None:
     t = db.get(Tournament, tournament_id)
     return t.created_by if t else None
+
+
+def coach_of_athlete(db: Session, athlete_id: int) -> int | None:
+    """User to notify about an athlete's events: creator, else club owner."""
+    a = db.get(Athlete, athlete_id)
+    if not a:
+        return None
+    if a.created_by:
+        return a.created_by
+    if a.club_id:
+        club = db.get(Club, a.club_id)
+        if club and club.owner_id:
+            return club.owner_id
+    return None
+
+
+def emit_event(db: Session, event: str, user_ids: list[int], message: str,
+               link: str = "") -> int:
+    """Write one in-app notification per recipient (dedup unread identical).
+
+    `event` becomes the Notification.type. Future channels (Telegram/email/
+    push) attach here: fan-out over (event, user_ids, message, link).
+    """
+    n = 0
+    for uid in dict.fromkeys(u for u in user_ids if u):
+        exists = db.query(Notification).filter_by(
+            user_id=uid, type=event, message=message, is_read=False).first()
+        if not exists:
+            db.add(Notification(user_id=uid, type=event, message=message, link=link))
+            n += 1
+    if n:
+        db.commit()
+    return n
 
 def sync_conflict_notifications(db: Session, tournament_id: int, lang: str = "ru") -> int:
     """Create one notification per schedule conflict for the organizer. Returns count."""
