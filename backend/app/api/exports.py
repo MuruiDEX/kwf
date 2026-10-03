@@ -69,6 +69,8 @@ def results(tid: int, db: Session = Depends(get_db)):
         m["athlete"] = a.full_name if a else "?"
         club = clubmap.get(a.club_id) if a and a.club_id else None
         m["club"] = club.name if club else "—"
+        # B2: club profile deep-link (additive key, public name already shown).
+        m["club_id"] = club.id if club else None
     return {"tournament": t.name, "standings": standings, "medal_table": table}
 
 # ---------- exports (§21) ----------
@@ -293,6 +295,13 @@ def _podium(db: Session, tid: int) -> list[dict]:
     by_bracket: dict[int, list] = {}
     for m in ms:
         by_bracket.setdefault(m.bracket_id, []).append(m)
+    return _assemble_podium(brackets, cmap, by_bracket)
+
+
+def _assemble_podium(brackets, cmap: dict, by_bracket: dict) -> list[dict]:
+    """Pure podium math shared by _podium (single) and _podiums_bulk.
+    Same mapping: gold = final winner, silver = final loser,
+    bronze = semifinal losers (no bronze fight exists)."""
     out = []
     for b in brackets:
         matches = by_bracket.get(b.id, [])
@@ -314,6 +323,30 @@ def _podium(db: Session, tid: int) -> list[dict]:
                     "gold_id": fin.winner_id,
                     "silver_id": loser,
                     "bronze_ids": sorted(set(bronze) - {fin.winner_id, loser})})
+    return out
+
+
+def _podiums_bulk(db: Session, tids: list[int]) -> dict[int, list[dict]]:
+    """Batched podiums for many tournaments (B2 club profile): 3 queries
+    total regardless of len(tids) — no N+1. Same math as _podium."""
+    out: dict[int, list[dict]] = {tid: [] for tid in tids}
+    if not tids:
+        return out
+    brackets = db.query(Bracket).filter(Bracket.tournament_id.in_(tids)).all()
+    if not brackets:
+        return out
+    cmap = {c.id: c for c in db.query(TournamentCategory).filter(
+        TournamentCategory.id.in_([b.category_id for b in brackets])).all()}
+    ms = db.query(BracketMatch).filter(
+        BracketMatch.bracket_id.in_([b.id for b in brackets])).all()
+    by_bracket: dict[int, list] = {}
+    for m in ms:
+        by_bracket.setdefault(m.bracket_id, []).append(m)
+    by_tid: dict[int, list] = {}
+    for b in brackets:
+        by_tid.setdefault(b.tournament_id, []).append(b)
+    for tid, bs in by_tid.items():
+        out[tid] = _assemble_podium(bs, cmap, by_bracket)
     return out
 
 

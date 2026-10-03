@@ -1,31 +1,34 @@
-import { Link } from 'react-router-dom';
-import { ArrowRight, ArrowUpRight, MapPin, Users, Trophy, Radio, FileBadge, Medal, Zap } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { useState } from 'react';
+import { ArrowRight, Search, Trophy, Radio, FileBadge, Medal, Zap } from 'lucide-react';
 import { useLang } from '../i18n';
 import { pageItems } from '../lib/api';
-import { Badge, EmptyState, Skeleton, DataTable } from '../components/ui/core';
-import { STATUS_TONE } from '../components/ui/tournament';
+import { EmptyState, Skeleton, DataTable } from '../components/ui/core';
+import { DiscoveryCard } from '../components/ui/DiscoveryCard';
 import { useTournaments, useRankings, useNews } from '../lib/queries';
-import { fmtDay, fmtMon } from '../lib/format';
 import type { NewsItem, RankingEntry, Tournament } from '../types/api';
 
-function TournamentCard({ t: tt, locale }: { t: Tournament; locale: string }) {
-  const t = tt;
+function SearchHero() {
+  const { t } = useLang();
+  const nav = useNavigate();
+  const [q, setQ] = useState('');
   return (
-    <Link to={`/tournaments/${t.id}`} className="card card-hover p-5 flex gap-4 items-start" aria-label={t.name}>
-      <div className="text-center rounded-xl px-3 py-2 flex-none" style={{ background: 'var(--accent-soft)', border: '1px solid var(--border)' }}>
-        <div className="display text-2xl font-semibold">{fmtDay(t.start_date)}</div>
-                  <div className="text-[11px] font-bold uppercase" style={{ color: 'var(--accent)' }}>{fmtMon(t.start_date, locale)}</div>
-      </div>
-      <div className="min-w-0 flex-1">
-        <Badge tone={STATUS_TONE[t.status] ?? 'gray'}>{t.status}</Badge>
-        <div className="font-extrabold mt-1.5 leading-tight">{t.name}</div>
-        <div className="text-[13px] mt-1 flex flex-wrap gap-x-3 gap-y-0.5" style={{ color: 'var(--muted)' }}>
-          <span className="inline-flex items-center gap-1"><MapPin size={13} />{t.city}{t.country ? `, ${t.country}` : ''}</span>
-          <span className="inline-flex items-center gap-1"><Users size={13} />{t.participants}</span>
-        </div>
-      </div>
-      <ArrowUpRight size={18} className="flex-none mt-1" style={{ color: 'var(--muted)' }} />
-    </Link>
+    <form
+      className="relative max-w-xl"
+      role="search"
+      aria-label={t('nav.search')}
+      onSubmit={(e) => { e.preventDefault(); nav(q.trim() ? `/search?q=${encodeURIComponent(q.trim())}` : '/search'); }}
+    >
+      <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--muted)' }} />
+      <input
+        aria-label={t('nav.search')}
+        className="field w-full pl-10 !py-3.5 !text-[15px]"
+        placeholder={t('search.ph')}
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        data-testid="home-search"
+      />
+    </form>
   );
 }
 
@@ -71,6 +74,7 @@ export function Home() {
             <Link to="/tournaments" className="btn-primary">{t('hero.ctaT')} <ArrowRight size={16} /></Link>
             <Link to="/live" className="btn-ghost"><span className="pulse-dot" style={{ width: 8, height: 8 }} /> {t('hero.ctaLive')}</Link>
           </div>
+          <div className="mt-5"><SearchHero /></div>
           <div className="hero-stats mt-9">
             <div className="hero-stat"><b>{tournaments?.length ?? '—'}</b><span>{t('hero.stT')}</span></div>
             <div className="hero-stat"><b>{athletes}</b><span>{t('hero.stP')}</span></div>
@@ -83,7 +87,7 @@ export function Home() {
         <div className="section-head"><h2>{t('sec.upcoming')}</h2><Link to="/tournaments">{t('sec.allT')}</Link></div>
         {isLoading ? <div className="grid md:grid-cols-3 gap-3"><Skeleton className="h-32" /><Skeleton className="h-32" /><Skeleton className="h-32" /></div>
           : !upcoming.length ? <EmptyState title={t('t.empty')} hint={t('t.emptyHint')} />
-          : <div className="grid md:grid-cols-3 gap-3">{upcoming.map((x) => <TournamentCard key={x.id} t={x} locale={lang} />)}</div>}
+          : <div className="grid md:grid-cols-3 gap-3">{upcoming.map((x) => <DiscoveryCard key={x.id} t={x} locale={lang} />)}</div>}
       </section>
 
       <section className="grid grid-cols-2 md:grid-cols-4 gap-3 fade-up fade-up-2">

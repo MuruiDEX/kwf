@@ -193,7 +193,8 @@ export function Results({ tid }: { tid: string }) {
           <h3 className="font-bold mb-2">{t('res.medals')}</h3>
           <DataTable cols={[t('res.athlete'), t('res.club'), t('res.gold'), t('res.titles')].concat(canIssue ? [t('res.diploma')] : [])}
             rows={data.medal_table.map((m): ReactNode[] => {
-              const row: ReactNode[] = [m.athlete, m.club, m.gold, m.titles.join(', ')];
+              const clubCell: ReactNode = m.club_id ? <Link key={`c${m.athlete_id}`} to={`/clubs/${m.club_id}`} className="hover:underline font-semibold">{m.club}</Link> : m.club;
+              const row: ReactNode[] = [m.athlete, clubCell, m.gold, m.titles.join(', ')];
               if (canIssue) row.push(<DiplomaButton key={m.athlete_id} tid={tid} athleteId={m.athlete_id} category={m.titles[0] ?? ''} />);
               return row;
             })} />

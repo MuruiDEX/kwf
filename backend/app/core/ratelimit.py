@@ -15,6 +15,16 @@ RULES: list[tuple[str, int, int]] = [
     ("/api/documents/verify", 30, 60),
     ("/api/tournaments/matches/", 120, 60),
     ("/api/tournaments", 120, 60),
+    ("/api/search", 60, 60),
+    ("/api/public/", 60, 60),
+    # B1: public enumeration surface. Detail (trailing slash) is cheaper
+    # browsing than full-list scans, hence the generous bucket. Order
+    # matters (first match wins): detail rules before their list rules.
+    ("/api/athletes/", 120, 60),
+    ("/api/athletes", 60, 60),
+    ("/api/clubs/", 120, 60),
+    ("/api/clubs", 60, 60),
+    ("/api/rankings", 60, 60),
     ("/api/documents/issue", 30, 60),
     # Wave 7: certificate.pdf renders a PDF per hit (cheap QR-DoS otherwise).
     # Placed after the specific rules above (first match wins), same budget.

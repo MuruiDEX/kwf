@@ -28,7 +28,8 @@ export interface Tournament {
   type: string;
   tatami_count: number;
   participants: number;
-  created_by: number | null;
+  /** B1: internal owner id — present for authenticated readers only. */
+  created_by?: number | null;
 }
 
 export interface Category {
@@ -55,10 +56,13 @@ export interface Registration {
   category: string;
   club_id: number | null;
   club: string;
-  birth_year: number | null;
+  /** B1: exact values only in scoped views (?mine, /scoped, /me/*). */
+  birth_year?: number | null;
   gender: Gender | null;
-  weight: number | null;
-  seed: number | null;
+  weight?: number | null;
+  /** B1: public derived bands (never exact). */
+  age_group: string;
+  weight_class: string;
   checked_in: boolean;
   /** Exact weight is PII: null for anonymous readers (P0). */
   weigh_in_kg: number | null;
@@ -194,9 +198,12 @@ export interface Athlete {
   points: number;
   wins: number;
   losses: number;
-  weight: number;
+  /** B1: exact only in scoped views (?mine=true, /scoped); public has bands. */
+  weight?: number;
   gender: Gender;
-  birth_year: number;
+  birth_year?: number;
+  age_group: string;
+  weight_class: string;
 }
 
 export interface AthleteHistoryItem {
@@ -211,11 +218,19 @@ export interface AthleteProfile extends Omit<Athlete, 'club_id'> {
   first_name: string;
   last_name: string;
   gender: Gender;
-  birth_year: number;
+  birth_year?: number;
   level: string;
   club: string;
   club_id: number | null;
   history: AthleteHistoryItem[];
+}
+
+/** B1: GET /api/athletes/{id}/scoped — public fields + exact values.
+ *  Explicit allowlist (coach scope or linked self); never user_id/created_by.
+ */
+export interface ScopedAthlete extends AthleteProfile {
+  birth_year: number;
+  weight: number;
 }
 
 export interface Club {
@@ -229,6 +244,10 @@ export interface Club {
 export interface ClubDetail extends Club {
   athletes: Pick<Athlete, 'id' | 'name' | 'points' | 'wins' | 'losses'>[];
   titles: number;
+  /** B2: roster pagination + profile sections (all public, PII-free). */
+  athlete_count: number;
+  upcoming_tournaments: ClubTournament[];
+  recent_results: ClubResult[];
 }
 
 export interface RankingEntry {
@@ -236,7 +255,7 @@ export interface RankingEntry {
   id: number;
   name: string;
   club_id: number | null;
-  weight: number;
+  /** B1: exact weight removed from public rankings (filters still work). */
   points: number;
   wins: number;
   losses: number;
@@ -267,8 +286,43 @@ export interface MedalRow {
   athlete_id: number;
   athlete: string;
   club: string;
+  /** B2: deep-link to the public club profile (additive, name was public). */
+  club_id?: number | null;
   gold: number;
   titles: string[];
+}
+
+/** B2: public club profile sections (all PII-free by construction). */
+export interface ClubTournament {
+  id: number;
+  name: string;
+  city: string;
+  start_date: string;
+  status: TournamentStatus;
+  participants: number;
+}
+
+export interface ClubResult {
+  tournament_id: number;
+  tournament: string;
+  date: string;
+  gold: number;
+  silver: number;
+  bronze: number;
+}
+
+export interface ClubScheduleItem {
+  id: number;
+  title: string;
+  starts_at: string;
+  ends_at: string | null;
+}
+
+export interface ClubSchedule {
+  items: ClubScheduleItem[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface ResultsResponse {
@@ -417,10 +471,22 @@ export interface Me {
   full_name: string;
 }
 
+export interface SearchTournamentHit {
+  id: number;
+  name: string;
+  city: string;
+  start_date: string;
+  status: TournamentStatus;
+}
+
 export interface SearchResult {
   athletes: { id: number; name: string }[];
   clubs: { id: number; name: string }[];
+  /** Wave A1 additive key: absent on old cached responses — always guard. */
+  tournaments?: SearchTournamentHit[];
 }
+
+export type SearchScope = 'athletes' | 'clubs' | 'tournaments';
 
 export interface TrainingSession {
   id: number;

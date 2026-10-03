@@ -8,6 +8,10 @@ process.env.E2E_DB_FILE = dbFile;
 /** Critical-path E2E: backend (sqlite file) + vite dev (proxy /api -> :8000). */
 export default defineConfig({
   testDir: './e2e',
+  // F-E2E-1: single worker. All specs share one backend/IP, and the auth
+  // rate limit (10 req/60s per IP) makes parallel workers flake with 429.
+  // Production limits are untouched; this is test-infra determinism only.
+  workers: 1,
   timeout: 120_000,
   expect: { timeout: 10_000 },
   use: { baseURL: 'http://127.0.0.1:5173', trace: 'retain-on-failure', screenshot: 'only-on-failure' },

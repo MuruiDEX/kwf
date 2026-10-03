@@ -1,11 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 import json
 from sqlalchemy.orm import Session
 from app.core.db import get_db, escape_like
 from app.core.deps import require_perm, get_current_user, get_optional_user, require_athlete_scope
 from app.core.paging import page_args, paginate, envelope
 from app.models.user import User
-from app.models.club_athlete import Athlete, Club
+from app.models.club_athlete import Athlete, Club, TrainingSession
 from app.models.tournament import Tournament, TournamentCategory
 from app.models.competition import Registration, Bracket, BracketMatch
 from app.models.misc import News, Notification, Document, AuditLog
@@ -27,12 +27,23 @@ def list_athletes(q: str = "", mine: bool = False, pg: dict = Depends(page_args)
         like = f"%{escape_like(q)}%"
         query = query.filter((Athlete.first_name.ilike(like, escape="\\")) | (Athlete.last_name.ilike(like, escape="\\")))
     rows, total = paginate(query, pg["limit"], pg["offset"])
-    # Wave 2: gender/birth_year included so the coach bulk-registration UI
-    # can auto-suggest a fitting category client-side (additive, no break).
-    return envelope([{"id": a.id, "name": a.full_name, "club_id": a.club_id, "country": a.country, "points": a.points,
-             "wins": a.wins, "losses": a.losses, "weight": a.weight_kg,
-             "gender": a.gender, "birth_year": a.birth_year} for a in rows],
-             total, pg["limit"], pg["offset"])
+    if mine:
+        # Scoped cabinet view (authenticated, own athletes only): exact
+        # fields retained so BulkReg auto-suggest keeps working.
+        return envelope([{"id": a.id, "name": a.full_name, "club_id": a.club_id, "country": a.country, "points": a.points,
+                 "wins": a.wins, "losses": a.losses, "weight": a.weight_kg,
+                 "gender": a.gender, "birth_year": a.birth_year} for a in rows],
+                 total, pg["limit"], pg["offset"])
+    # B1: public list exposes derived bands only, never exact birth_year/weight.
+    from app.services.bands import bands_for_category, latest_public_categories_bulk
+    cats = latest_public_categories_bulk(db, [a.id for a in rows])
+    out = []
+    for a in rows:
+        ag, wc = bands_for_category(cats.get(a.id))
+        out.append({"id": a.id, "name": a.full_name, "club_id": a.club_id, "country": a.country,
+                    "points": a.points, "wins": a.wins, "losses": a.losses,
+                    "gender": a.gender, "age_group": ag, "weight_class": wc})
+    return envelope(out, total, pg["limit"], pg["offset"])
 
 def _placement_from_matches(matches: list[BracketMatch], athlete_id: int) -> str:
     """champion > finalist > semifinalist > participant, pure python over preloaded matches."""
@@ -79,11 +90,44 @@ def athlete_profile(aid: int, db: Session = Depends(get_db)):
         history.append({"tournament_id": r.tournament_id, "tournament": t.name if t else "?",
                         "date": str(t.start_date) if t else "", "category": c.name if c else "?",
                         "result": _placement_from_matches(by_bracket.get(b.id, []) if b else [], aid)})
+    # B1: public profile exposes derived bands only (exact fields live
+    # behind GET /api/athletes/{aid}/scoped + /api/me/athlete).
+    from app.services.bands import public_bands
+    ag, wc = public_bands(db, aid)
     return {"id": a.id, "name": a.full_name, "first_name": a.first_name, "last_name": a.last_name,
-            "gender": a.gender, "birth_year": a.birth_year,
-            "weight": a.weight_kg, "level": a.level, "country": a.country,
+            "gender": a.gender, "age_group": ag, "weight_class": wc,
+            "level": a.level, "country": a.country,
             "club": club.name if club else "—", "club_id": a.club_id,
             "points": a.points, "wins": a.wins, "losses": a.losses, "history": history}
+
+
+@router.get("/api/athletes/{aid}/scoped")
+def athlete_scoped(aid: int, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """B1: exact birth_year/weight_kg for coach scope or linked self.
+
+    Explicit allowlist (NOT an alias of any future parent view): public
+    fields + birth_year + weight. user_id/created_by are never returned.
+    Mirrors _spravki_scope (spravki.py): athletes.manage -> require_athlete_scope,
+    else linked athlete self, else 403.
+    """
+    from app.core.permissions import has_perm, has_role
+    a = db.get(Athlete, aid)
+    if not a:
+        raise HTTPException(404, "Not found")
+    if has_perm(db, user, "athletes.manage"):
+        require_athlete_scope(aid, db, user)
+    elif not (has_role(db, user, "athlete") and a.user_id == user.id):
+        raise HTTPException(403, "Foreign athlete")
+    club = db.get(Club, a.club_id) if a.club_id else None
+    from app.services.bands import public_bands as _bands
+    ag, wc = _bands(db, aid)
+    return {"id": a.id, "name": a.full_name, "first_name": a.first_name, "last_name": a.last_name,
+            "gender": a.gender, "birth_year": a.birth_year, "weight": a.weight_kg,
+            "age_group": ag, "weight_class": wc,
+            "level": a.level, "country": a.country,
+            "club": club.name if club else "—", "club_id": a.club_id,
+            "points": a.points, "wins": a.wins, "losses": a.losses}
 
 @router.post("/api/athletes")
 def create_athlete(data: AthleteIn, db: Session = Depends(get_db), user=Depends(require_perm("athletes.manage"))):
@@ -148,21 +192,99 @@ def create_club(data: ClubIn, db: Session = Depends(get_db), user: User = Depend
     return {"id": c.id}
 
 @router.get("/api/clubs/{cid}")
-def club_detail(cid: int, db: Session = Depends(get_db)):
+def club_detail(cid: int, athletes_limit: int = Query(50, ge=1, le=100),
+                athletes_offset: int = Query(0, ge=0),
+                db: Session = Depends(get_db)):
+    """B2 public club profile. All public (no auth), PII-free by construction:
+    roster items carry id/name/points/wins/losses only (no birth_year,
+    weight, user_id, owner_id anywhere). Roster paginated; counts (titles,
+    athlete_count) always cover the WHOLE club, never just the page."""
+    from datetime import date as _date
+    from sqlalchemy import func
     c = db.get(Club, cid)
     if not c:
         raise HTTPException(404, "Not found")
-    athletes = db.query(Athlete).filter_by(club_id=cid).order_by(Athlete.points.desc()).all()
-    titles = 0
-    if athletes:
-        from sqlalchemy import func
-        titles = db.query(func.count(BracketMatch.id)).filter(
-            BracketMatch.winner_id.in_([a.id for a in athletes]),
-            BracketMatch.status == "finished",
-            BracketMatch.next_match_id.is_(None)).scalar() or 0
+    athlete_count = db.query(func.count(Athlete.id)).filter_by(club_id=cid).scalar() or 0
+    athletes = (db.query(Athlete).filter_by(club_id=cid).order_by(Athlete.points.desc())
+                .offset(athletes_offset).limit(athletes_limit).all())
+    # Full-club titles via join (same semantics as before: finished finals
+    # won by club athletes) — independent of the roster page.
+    titles = (db.query(func.count(BracketMatch.id))
+              .join(Athlete, BracketMatch.winner_id == Athlete.id)
+              .filter(Athlete.club_id == cid,
+                      BracketMatch.status == "finished",
+                      BracketMatch.next_match_id.is_(None)).scalar() or 0)
+    today = _date.today()
+    up_rows = (db.query(Tournament, func.count(Registration.id))
+               .join(Registration, Registration.tournament_id == Tournament.id)
+               .join(Athlete, Registration.athlete_id == Athlete.id)
+               .filter(Athlete.club_id == cid,
+                       Tournament.status.in_(["upcoming", "registration"]),
+                       Tournament.start_date >= today)
+               .group_by(Tournament.id)
+               .order_by(Tournament.start_date).limit(5).all())
+    upcoming = [{"id": t.id, "name": t.name, "city": t.city,
+                 "start_date": str(t.start_date), "status": t.status,
+                 "participants": int(n)} for t, n in up_rows]
+    rt = (db.query(Registration.tournament_id, Tournament.name,
+                   func.max(Tournament.start_date).label("d"))
+          .join(Athlete, Registration.athlete_id == Athlete.id)
+          .join(Tournament, Registration.tournament_id == Tournament.id)
+          .filter(Athlete.club_id == cid, Tournament.status == "finished")
+          .group_by(Registration.tournament_id, Tournament.name)
+          .order_by(func.max(Tournament.start_date).desc()).limit(5).all())
+    recent_meta = [(tid, name, d) for tid, name, d in rt]
+    aids = {r[0] for r in db.query(Athlete.id).filter_by(club_id=cid).all()}
+    from app.api.exports import _podiums_bulk
+    podiums = _podiums_bulk(db, [tid for tid, _, _ in recent_meta]) if recent_meta else {}
+    recent = []
+    for tid, name, d in recent_meta:
+        g = s = b = 0
+        for p in podiums.get(tid, []):
+            if p["gold_id"] in aids:
+                g += 1
+            if p["silver_id"] in aids:
+                s += 1
+            b += len([x for x in p["bronze_ids"] if x in aids])
+        recent.append({"tournament_id": tid, "tournament": name,
+                       "date": str(d), "gold": g, "silver": s, "bronze": b})
     return {"id": c.id, "name": c.name, "country": c.country, "city": c.city, "coach": c.coach_name,
             "athletes": [{"id": a.id, "name": a.full_name, "points": a.points, "wins": a.wins, "losses": a.losses} for a in athletes],
-            "titles": titles}
+            "athlete_count": int(athlete_count), "titles": int(titles),
+            "upcoming_tournaments": upcoming, "recent_results": recent}
+
+
+@router.get("/api/clubs/{cid}/schedule")
+def club_schedule(cid: int, from_date: str = Query(default="", alias="from"),
+                  limit: int = Query(default=20, ge=1, le=50),
+                  offset: int = Query(default=0, ge=0),
+                  db: Session = Depends(get_db)):
+    """B2 public club schedule (read-only). Future sessions only
+    (starts_at >= from/today), public-safe serializer: id/title/starts_at/
+    ends_at — NEVER note (coach planning PII) or coach_id. ?limit>50 -> 422
+    via Query validation; unknown club -> 404."""
+    from datetime import date as _date
+    from sqlalchemy import func
+    c = db.get(Club, cid)
+    if not c:
+        raise HTTPException(404, "Not found")
+    if from_date:
+        try:
+            start = _date.fromisoformat(from_date)
+        except ValueError:
+            raise HTTPException(400, "Invalid from (expected YYYY-MM-DD)")
+    else:
+        start = _date.today()
+    base = db.query(TrainingSession).filter(
+        TrainingSession.club_id == cid,
+        func.date(TrainingSession.starts_at) >= start)
+    total = base.count()
+    rows = base.order_by(TrainingSession.starts_at).offset(offset).limit(limit).all()
+    return {"items": [{"id": r.id, "title": r.title,
+                       "starts_at": str(r.starts_at),
+                       "ends_at": str(r.ends_at) if r.ends_at else None}
+                      for r in rows],
+            "total": total, "limit": limit, "offset": offset}
 
 @router.get("/api/rankings")
 def rankings(gender: str = "", country: str = "", weight_min: float = 0, weight_max: float = 999,
@@ -174,7 +296,8 @@ def rankings(gender: str = "", country: str = "", weight_min: float = 0, weight_
         q = q.filter(Athlete.country == country)
     q = q.order_by(Athlete.points.desc())
     rows, total = paginate(q, pg["limit"], pg["offset"])
-    return envelope([{"rank": pg["offset"] + i + 1, "id": a.id, "name": a.full_name, "club_id": a.club_id, "weight": a.weight_kg,
+    # B1: public rankings expose no exact weight (filters by weight still work).
+    return envelope([{"rank": pg["offset"] + i + 1, "id": a.id, "name": a.full_name, "club_id": a.club_id,
              "points": a.points, "wins": a.wins, "losses": a.losses} for i, a in enumerate(rows)],
              total, pg["limit"], pg["offset"])
 
@@ -221,12 +344,80 @@ def list_referees(db: Session = Depends(get_db), user: User = Depends(require_pe
 
 
 @router.get("/api/search")
-def search(q: str, db: Session = Depends(get_db)):
-    like = f"%{escape_like(q)}%"
-    athletes = db.query(Athlete).filter((Athlete.first_name.ilike(like, escape="\\")) | (Athlete.last_name.ilike(like, escape="\\"))).limit(5).all()
-    clubs = db.query(Club).filter(Club.name.ilike(like, escape="\\")).limit(5).all()
-    return {"athletes": [{"id": a.id, "name": a.full_name} for a in athletes],
-            "clubs": [{"id": c.id, "name": c.name} for c in clubs]}
+def search(q: str, scope: str = "athletes,clubs,tournaments",
+           limit: int = 5, offset: int = 0, db: Session = Depends(get_db)):
+    """Wave A1: scoped global search (additive, backward compatible).
+
+    - q: substring over athlete first/last name, club name, tournament name/city.
+      Minimum 2 non-space chars; shorter queries return empty sections
+      (avoids full-table scans from single-char input).
+    - scope: comma list subset of {athletes,clubs,tournaments}.
+      Unknown tokens are ignored; empty result keeps old shape.
+    - limit: per-section cap 1..50 (default 5 = old behavior).
+    - offset: per-section offset.
+    Shape keeps {athletes, clubs} and ADDS {tournaments}; old consumers
+    (CommandMenu) ignore the extra key.
+    """
+    scopes = {s.strip().lower() for s in (scope or "").split(",") if s.strip()}
+    if not scopes:
+        scopes = {"athletes", "clubs", "tournaments"}
+    limit = max(1, min(int(limit or 5), 50))
+    offset = max(0, int(offset or 0))
+    out: dict = {"athletes": [], "clubs": [], "tournaments": []}
+    if len((q or "").strip()) < 2:
+        return out
+    like = f"%{escape_like(q.strip())}%"
+    if "athletes" in scopes:
+        athletes = db.query(Athlete).filter(
+            (Athlete.first_name.ilike(like, escape="\\")) | (Athlete.last_name.ilike(like, escape="\\"))
+        ).order_by(Athlete.points.desc()).offset(offset).limit(limit).all()
+        out["athletes"] = [{"id": a.id, "name": a.full_name} for a in athletes]
+    if "clubs" in scopes:
+        clubs = db.query(Club).filter(Club.name.ilike(like, escape="\\")).order_by(
+            Club.id.desc()).offset(offset).limit(limit).all()
+        out["clubs"] = [{"id": c.id, "name": c.name} for c in clubs]
+    if "tournaments" in scopes:
+        rows = db.query(Tournament).filter(
+            (Tournament.name.ilike(like, escape="\\")) | (Tournament.city.ilike(like, escape="\\"))
+        ).order_by(Tournament.start_date).offset(offset).limit(limit).all()
+        out["tournaments"] = [{"id": t.id, "name": t.name, "city": t.city,
+                               "start_date": str(t.start_date), "status": t.status} for t in rows]
+    return out
+
+
+@router.get("/api/public/cities")
+def public_cities(limit: int = 50, db: Session = Depends(get_db)):
+    """Wave A1: distinct tournament cities for discovery selects (read-only).
+
+    Union of tournament + club cities with usage counts, top-N first.
+    No PII: city names only.
+    """
+    from sqlalchemy import func
+    limit = max(1, min(int(limit or 50), 100))
+    counts: dict[str, int] = {}
+    for city, n in db.query(Tournament.city, func.count(Tournament.id)).filter(
+            Tournament.city.isnot(None), Tournament.city != "").group_by(Tournament.city).all():
+        counts[city] = counts.get(city, 0) + int(n)
+    for city, n in db.query(Club.city, func.count(Club.id)).filter(
+            Club.city.isnot(None), Club.city != "").group_by(Club.city).all():
+        counts[city] = counts.get(city, 0) + int(n)
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+    return {"items": [{"city": c, "count": n} for c, n in ranked]}
+
+
+@router.get("/api/public/organizers")
+def public_organizers(limit: int = 50, db: Session = Depends(get_db)):
+    """Wave A1: distinct organizer public names for discovery selects.
+
+    Derived from tournaments.created_by -> users.full_name. No emails/PII.
+    """
+    from sqlalchemy import func
+    limit = max(1, min(int(limit or 50), 100))
+    rows = db.query(User.full_name, func.count(Tournament.id)).join(
+        Tournament, Tournament.created_by == User.id).filter(
+        User.full_name.isnot(None), User.full_name != "").group_by(
+        User.full_name).order_by(func.count(Tournament.id).desc()).limit(limit).all()
+    return {"items": [{"name": name, "tournaments": int(n)} for name, n in rows]}
 
 @router.get("/api/notifications")
 def list_notifications(unread_only: bool = False, pg: dict = Depends(page_args),

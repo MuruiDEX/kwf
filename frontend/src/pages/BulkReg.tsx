@@ -15,9 +15,13 @@ function ageOf(birthYear: number): number {
 }
 
 function fits(a: Athlete, c: Category): boolean {
+  // B1: exact fields are optional in the type (public views carry bands).
+  // BulkReg athletes always come from ?mine=true (exact present); the
+  // fallbacks only keep tsc honest, never trigger at runtime here.
+  const by = a.birth_year ?? 0, w = a.weight ?? 0;
   return c.gender === a.gender
-    && ageOf(a.birth_year) >= c.age_min && ageOf(a.birth_year) <= c.age_max
-    && a.weight >= c.weight_min && a.weight <= c.weight_max;
+    && ageOf(by) >= c.age_min && ageOf(by) <= c.age_max
+    && w >= c.weight_min && w <= c.weight_max;
 }
 
 export function BulkRegSection({ athletes, tournaments }: { athletes: Athlete[]; tournaments: Tournament[] }) {

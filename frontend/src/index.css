@@ -200,6 +200,16 @@ table.data thead th { position: sticky; top: 0; background: var(--surface); z-in
   .hero-stats { gap: 16px; }
 }
 
+/* ---------- Wave A2: discovery cards (compact list layout on phones) ---------- */
+.discovery-card { display: flex; gap: 16px; align-items: flex-start; }
+.discovery-card .discovery-arrow { margin-top: 4px; }
+@media (max-width: 640px) {
+  .discovery-card { gap: 12px; padding: 14px; align-items: center; }
+  .discovery-card .discovery-date { padding: 6px 10px; border-radius: 10px; }
+  .discovery-card .discovery-date .display { font-size: 20px; }
+  .discovery-card .discovery-arrow { display: none; }
+}
+
 /* ---------- Wave 1: print spravki preview (browser print, A4) ---------- */
 @media print {
   body * { visibility: hidden; }

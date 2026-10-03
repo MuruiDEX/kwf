@@ -4,15 +4,26 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query';
 import { api } from './api';
 import type {
-  AdminUser, AdminUserDetail, Athlete, AthleteDoc, AthleteProfile, AuditItem, Bracket, BracketMatch, Category, Club, ClubDetail,
+  AdminUser, AdminUserDetail, Athlete, AthleteDoc, AthleteProfile, AuditItem, Bracket, BracketMatch, Category, Club, ClubDetail, ClubSchedule, ScopedAthlete,
   DocVerify, IssuedDoc, LiveState, MyAssignment, MyAthlete, MyRegistration, NewsDetail, NewsItem, NotesResponse,
   OrganizerRequest, Paged, PermissionMeta, Podium, RankingEntry, RefereeOption, Registration, RegStatus, ReportResponse, ResultsResponse,
   SpravkaTemplate, TatamiAssignment, Tournament, TournamentDetail, TournamentStatus, TrainingSession, ValidationItem,
 } from '../types/api';
 export const qk = {
   me: ['me'],
-  tournaments: (q = '', status = '') =>
-    q || status ? (['tournaments', q, status] as const) : (['tournaments'] as const),
+  // Wave A2: extended filters are appended ONLY when set, so legacy keys
+  // ['tournaments'] and ['tournaments', q, status] stay byte-identical.
+  // B1: same rule for mine — appended only when true.
+  tournaments: (q = '', status = '', city = '', from = '', to = '', mine = false): readonly unknown[] =>
+    q || status || city || from || to || mine
+      ? city || from || to || mine
+        ? ['tournaments', q, status, city, from, to, ...(mine ? ['mine'] : [])]
+        : (['tournaments', q, status] as const)
+      : (['tournaments'] as const),
+  // F-UX-3: qk.search removed (dead code, 0 production references).
+  // The single search key lives in lib/search.ts useGlobalSearch:
+  // ['search', query, sortedScope, capped]. CommandMenu intentionally
+  // uses a direct fetch (no react-query) to avoid warming that cache.
   tournamentsLive: ['tournaments-live'] as const,
   tournament: (id: string | number) => ['t', String(id)] as const,
   regs: (id: string | number) => ['regs', String(id)] as const,
@@ -38,9 +49,25 @@ export const qk = {
 
 type Opt<T> = Omit<UseQueryOptions<T>, 'queryKey' | 'queryFn'>;
 
-// ---------- tournaments ----------
-export function useTournaments(q = '', status = '', opt?: Opt<Paged<Tournament>>) {
-  return useQuery<Paged<Tournament>>({ queryKey: qk.tournaments(q, status), queryFn: () => api(`/api/tournaments?q=${encodeURIComponent(q)}&status=${status}`), ...opt });
+// ---------- tournaments (Wave A1 filters, Wave A2 URL-driven) ----------
+export function useTournaments(q = '', status = '', opt?: Opt<Paged<Tournament>>, extra?: { city?: string; from?: string; to?: string; mine?: boolean }) {
+  const city = extra?.city ?? '', from = extra?.from ?? '', to = extra?.to ?? '';
+  const mine = extra?.mine ?? false;
+  const p = new URLSearchParams();
+  if (q) p.set('q', q);
+  if (status) p.set('status', status);
+  if (city) p.set('city', city);
+  if (from) p.set('date_from', from);
+  if (to) p.set('date_to', to);
+  if (mine) p.set('mine', 'true');
+  const qs = p.toString();
+  return useQuery<Paged<Tournament>>({ queryKey: qk.tournaments(q, status, city, from, to, mine), queryFn: () => api(`/api/tournaments${qs ? `?${qs}` : ''}`), ...opt });
+}
+export function usePublicCities(limit = 50) {
+  return useQuery<{ items: { city: string; count: number }[] }>({ queryKey: ['public-cities', limit], queryFn: () => api(`/api/public/cities?limit=${limit}`), staleTime: 120_000 });
+}
+export function usePublicOrganizers(limit = 50) {
+  return useQuery<{ items: { name: string; tournaments: number }[] }>({ queryKey: ['public-organizers', limit], queryFn: () => api(`/api/public/organizers?limit=${limit}`), staleTime: 120_000 });
 }
 export function useTournamentsLive() {
   return useQuery<Paged<Tournament>>({ queryKey: qk.tournamentsLive, queryFn: () => api('/api/tournaments?status=live') });
@@ -88,6 +115,11 @@ export function useMyClubs(enabled = true) {
 export function useAthlete(id: string | undefined) {
   return useQuery<AthleteProfile>({ queryKey: qk.athlete(id ?? ''), queryFn: () => api(`/api/athletes/${id}`), retry: false, enabled: !!id });
 }
+// B1: exact birth_year/weight_kg for coach scope or linked self.
+// Separate endpoint + key (never merged into the public profile cache).
+export function useScopedAthlete(id: string | undefined, enabled = true) {
+  return useQuery<ScopedAthlete>({ queryKey: ['scoped-athlete', String(id ?? '')], queryFn: () => api(`/api/athletes/${id}/scoped`), retry: false, enabled: !!id && enabled });
+}
 // ---------- Wave 2: athlete's public-kind documents ----------
 export function useAthleteDocs(id: string | undefined, enabled = true) {
   return useQuery<AthleteDoc[]>({ queryKey: ['athlete-docs', String(id ?? '')], queryFn: () => api(`/api/athletes/${id}/documents`), retry: false, enabled: !!id && enabled });
@@ -98,8 +130,14 @@ export function useRankings(qs = '') {
 export function useClubs() {
   return useQuery<Paged<Club>>({ queryKey: qk.clubs, queryFn: () => api('/api/clubs') });
 }
-export function useClub(id: string | undefined) {
-  return useQuery<ClubDetail>({ queryKey: qk.club(id ?? ''), queryFn: () => api(`/api/clubs/${id}`), retry: false, enabled: !!id });
+export function useClub(id: string | undefined, athletesLimit = 50) {
+  const capped = Math.max(1, Math.min(athletesLimit, 100));
+  const key = capped === 50 ? qk.club(id ?? '') : (['club', String(id ?? ''), capped] as const);
+  return useQuery<ClubDetail>({ queryKey: key, queryFn: () => api(`/api/clubs/${id}?athletes_limit=${capped}`), retry: false, enabled: !!id });
+}
+// B2: public club schedule (read-only, future sessions, no note/coach_id).
+export function useClubSchedule(id: string | undefined, enabled = true) {
+  return useQuery<ClubSchedule>({ queryKey: ['club-schedule', String(id ?? '')], queryFn: () => api(`/api/clubs/${id}/schedule`), retry: false, enabled: !!id && enabled });
 }
 
 // ---------- content / admin ----------
@@ -239,7 +277,7 @@ export function useBulkRegStatus(tid: string) {
 // ---------- multi-role: coach training schedule ----------
 export function useSessions(clubId: number | null, enabled = true) {
   const qs = clubId != null ? `?club_id=${clubId}` : '';
-  return useQuery<TrainingSession[]>({ queryKey: ['sessions', clubId ?? 0], queryFn: () => api(`/api/schedule${qs}`), retry: false, enabled });
+  return useQuery<Paged<TrainingSession>>({ queryKey: ['sessions', clubId ?? 0], queryFn: () => api(`/api/schedule${qs}`), retry: false, enabled });
 }
 export function useSaveSession() {
   const qc = useQueryClient();

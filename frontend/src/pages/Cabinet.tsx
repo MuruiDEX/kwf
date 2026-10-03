@@ -33,6 +33,11 @@ export function Cabinet({ coachOnly = false }: { coachOnly?: boolean } = {}) {
   const nav = useNavigate();
   const qc = useQueryClient();
 
+  // B1 note: cabinet keeps the public list query on purpose — the same data
+  // feeds BulkRegSection's open-tournament picker (other organizers'
+  // tournaments included). created_by stays present for authenticated
+  // readers, so the owner filter below keeps working; ?mine=true exists
+  // server-side for narrower cabinet views if ever needed.
   const { data: tournamentsRaw } = useTournaments('', '', { enabled: !!user });
   const { data: notes } = useNotes(!!user);
   const tournaments: Tournament[] = pageItems(tournamentsRaw);

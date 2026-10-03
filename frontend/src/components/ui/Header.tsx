@@ -12,7 +12,15 @@ export function Header({ onCmdk }: { onCmdk: () => void }) {
     ['/tournaments', t('nav.tournaments')], ['/athletes', t('nav.athletes')], ['/rankings', t('nav.rankings')],
     ['/live', t('nav.live')], ['/news', t('nav.news')], ['/clubs', t('nav.clubs')],
   ];
-  const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'));
+  // Wave A2: persist theme in localStorage (was toggle-only, reset on reload).
+  const [dark, setDark] = useState(() => {
+    try {
+      const saved = localStorage.getItem('kwf-theme');
+      if (saved === 'dark') { document.documentElement.classList.add('dark'); return true; }
+      if (saved === 'light') { document.documentElement.classList.remove('dark'); return false; }
+    } catch { /* private mode: fall through to DOM state */ }
+    return document.documentElement.classList.contains('dark');
+  });
   const [notes, setNotes] = useState<NotesResponse | null>(null);
   const [showNotes, setShowNotes] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -21,7 +29,12 @@ export function Header({ onCmdk }: { onCmdk: () => void }) {
   // P1: admin icon via permission (admin holds all perms), so users granted
   // roles.manage-equivalent visibility aren't hidden by a raw role check.
   const isAdmin = can('roles.manage');
-  const toggle = () => { setDark(!dark); document.documentElement.classList.toggle('dark', !dark); };
+  const toggle = () => {
+    const next = !dark;
+    setDark(next);
+    document.documentElement.classList.toggle('dark', next);
+    try { localStorage.setItem('kwf-theme', next ? 'dark' : 'light'); } catch { /* ignore */ }
+  };
   const loadNotes = () => api<NotesResponse>('/api/notifications').then(setNotes).catch(() => {});
   useEffect(() => {
     if (!user) { setNotes(null); return; }
@@ -62,7 +75,7 @@ export function Header({ onCmdk }: { onCmdk: () => void }) {
           <button onClick={onCmdk} className="card hidden lg:flex items-center gap-1.5 px-3 py-2 text-[13px] font-semibold" aria-label="Command menu">
             <Search size={14} /> {t('nav.search')} <kbd className="text-[11px] px-1 rounded" style={{ background: 'var(--border)' }}>⌘K</kbd>
           </button>
-          <button onClick={onCmdk} className="lg:hidden card p-2" aria-label={t('nav.search')}><Search size={18} /></button>
+          <button onClick={() => nav('/search')} className="lg:hidden card p-2" aria-label={t('nav.search')}><Search size={18} /></button>
           <button onClick={() => setShowNotes(v => !v)} className="card p-2 relative" aria-label={t('nav.notifications')}>
             <Bell size={18} />
             {!!notes?.unread && <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-black grid place-items-center" style={{ background: 'var(--accent)', color: '#05080D' }}>{notes.unread}</span>}
@@ -96,7 +109,7 @@ export function Header({ onCmdk }: { onCmdk: () => void }) {
       </div>
       {menu && (
         <nav className="lg:hidden border-t px-4 py-2 flex flex-col" style={{ borderColor: 'var(--border)', background: 'var(--bg)' }} aria-label="Mobile">
-          {[...NAV, ['/verify', t('nav.verify')] as [string, string]].map(([to, label]) => (
+          {[...NAV, ['/search', t('nav.search')] as [string, string], ['/verify', t('nav.verify')] as [string, string]].map(([to, label]) => (
             <Link key={to} to={to} onClick={() => { setMenu(false); if (to === '/live') nav(to); }} className="py-2.5 font-bold text-sm border-b" style={{ borderColor: 'var(--border)' }}>{label}</Link>
           ))}
           <div className="flex items-center gap-3 py-2.5 sm:hidden">

@@ -6,6 +6,7 @@ import { AuthProvider, RequireRole, Toasts } from './auth';
 import { Header } from './components/ui/Header';
 import { CommandMenu } from './components/ui/CommandMenu';
 import { Home } from './pages/Home';
+import { SearchPage } from './pages/Search';
 import { Tournaments } from './pages/Tournaments';
 import { TournamentDetail } from './pages/TournamentDetail';
 import { Athletes, AthleteDetail, Rankings, Clubs, ClubDetail, LiveAll } from './pages/Lists';
@@ -79,6 +80,7 @@ export default function App() {
           <main className="max-w-6xl mx-auto px-4 py-6">
             <Routes>
               <Route path="/" element={<Home />} />
+              <Route path="/search" element={<SearchPage />} />
               <Route path="/tournaments" element={<Tournaments />} />
               <Route path="/tournaments/:id" element={<TournamentDetail />} />
               <Route path="/athletes" element={<Athletes />} />

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useLang } from '../i18n';
-import { errMsg } from '../lib/api';
+import { errMsg, pageItems } from '../lib/api';
 import { useSessions, useSaveSession, useDeleteSession } from '../lib/queries';
 import { EmptyState, Skeleton } from '../components/ui/core';
 import type { Club } from '../types/api';
@@ -11,7 +11,8 @@ export function ScheduleSection({ clubs }: { clubs: Club[] }) {
   const { t } = useLang();
   const [clubId, setClubId] = useState<number | null>(clubs[0]?.id ?? null);
   const cid = clubId ?? clubs[0]?.id ?? null;
-  const { data, isLoading, isError, refetch } = useSessions(cid, cid != null);
+  const { data: raw, isLoading, isError, refetch } = useSessions(cid, cid != null);
+  const data = pageItems(raw);
   const save = useSaveSession();
   const del = useDeleteSession();
   const [form, setForm] = useState({ title: '', starts_at: '', ends_at: '', note: '' });
@@ -64,9 +65,9 @@ export function ScheduleSection({ clubs }: { clubs: Club[] }) {
         {isLoading ? <Skeleton className="h-16" /> : isError ? (
           <div className="text-sm space-x-2"><span>{t('common.err')}</span>
             <button className="underline font-bold" onClick={() => refetch()}>{t('common.retry')}</button></div>
-        ) : !(data ?? []).length ? (
+        ) : !data.length ? (
           <EmptyState title={t('sched.empty')} hint="" />
-        ) : (data ?? []).map((s) => (
+        ) : data.map((s) => (
           <div key={s.id} className="text-sm flex items-center gap-2 py-1 border-b last:border-0" style={{ borderColor: 'var(--border)' }}>
             <span className="font-extrabold flex-none">{s.starts_at.slice(0, 16).replace('T', ' ')}</span>
             <span className="flex-1 min-w-0 truncate font-semibold">{s.title}

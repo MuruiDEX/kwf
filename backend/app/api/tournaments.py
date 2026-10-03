@@ -30,23 +30,62 @@ def audit(db: Session, user: User | None, action: str, entity: str = "", entity_
     db.add(AuditLog(actor_id=user.id if user else None, action=action, entity=entity, entity_id=entity_id))
     db.commit()
 
-def to_dict(t: Tournament, db: Session) -> dict:
+def to_dict(t: Tournament, db: Session, user: User | None = None) -> dict:
     count = db.query(Registration).filter_by(tournament_id=t.id).count()
-    return {"id": t.id, "name": t.name, "city": t.city, "country": t.country, "organization": t.organization,
-            "start_date": str(t.start_date), "status": t.status, "type": t.type,
-            "tatami_count": t.tatami_count, "participants": count, "created_by": t.created_by}
+    d = {"id": t.id, "name": t.name, "city": t.city, "country": t.country, "organization": t.organization,
+         "start_date": str(t.start_date), "status": t.status, "type": t.type,
+         "tatami_count": t.tatami_count, "participants": count}
+    # B1: created_by (internal user id) only for authenticated readers.
+    if user is not None:
+        d["created_by"] = t.created_by
+    return d
 
 @router.get("")
-def list_tournaments(q: str = "", country: str = "", status: str = "",
-                     pg: dict = Depends(page_args), db: Session = Depends(get_db)):
+def list_tournaments(q: str = "", country: str = "", status: str = "", city: str = "",
+                     date_from: str = "", date_to: str = "", mine: bool = False,
+                     pg: dict = Depends(page_args), db: Session = Depends(get_db),
+                     user: User | None = Depends(get_optional_user)):
+    """Wave A1: public discovery filters (additive, no breaks).
+
+    - q: ilike substring over name (existing behavior preserved).
+    - city: ilike substring over city (new).
+    - country: exact match (existing).
+    - status: exact match, except "upcoming" which groups
+      upcoming+registration ("Предстоящие").
+    - date_from/date_to: ISO YYYY-MM-DD bounds over start_date (new).
+    - mine: B1 cabinet view, own tournaments only (requires login, 401 anon).
+    """
+    if mine and user is None:
+        raise HTTPException(401, "Not authenticated")
     query = db.query(Tournament).order_by(Tournament.start_date)
+    if mine and user is not None:
+        query = query.filter(Tournament.created_by == user.id)
     if q:
         like = f"%{escape_like(q)}%"
         query = query.filter(Tournament.name.ilike(like, escape="\\"))
+    if city:
+        clike = f"%{escape_like(city)}%"
+        query = query.filter(Tournament.city.ilike(clike, escape="\\"))
     if country:
         query = query.filter_by(country=country)
     if status:
-        query = query.filter_by(status=status)
+        if status == "upcoming":
+            # Grouped "upcoming" view: announced + open for registration.
+            query = query.filter(Tournament.status.in_(["upcoming", "registration"]))
+        else:
+            query = query.filter_by(status=status)
+    if date_from:
+        try:
+            df = date.fromisoformat(date_from)
+        except ValueError:
+            raise HTTPException(400, "Invalid date_from (expected YYYY-MM-DD)")
+        query = query.filter(Tournament.start_date >= df)
+    if date_to:
+        try:
+            dt = date.fromisoformat(date_to)
+        except ValueError:
+            raise HTTPException(400, "Invalid date_to (expected YYYY-MM-DD)")
+        query = query.filter(Tournament.start_date <= dt)
     items, total = paginate(query, pg["limit"], pg["offset"])
     # One grouped count instead of N per-tournament counts (N+1 fix).
     ids = [t.id for t in items]
@@ -60,8 +99,10 @@ def list_tournaments(q: str = "", country: str = "", status: str = "",
     for t in items:
         d = {"id": t.id, "name": t.name, "city": t.city, "country": t.country, "organization": t.organization,
              "start_date": str(t.start_date), "status": t.status, "type": t.type,
-             "tatami_count": t.tatami_count, "participants": counts.get(t.id, 0),
-             "created_by": t.created_by}
+             "tatami_count": t.tatami_count, "participants": counts.get(t.id, 0)}
+        # B1: created_by only for authenticated readers (cabinet compat).
+        if user is not None:
+            d["created_by"] = t.created_by
         out.append(d)
     return envelope(out, total, pg["limit"], pg["offset"])
 
@@ -75,15 +116,16 @@ def create_tournament(data: TournamentIn, db: Session = Depends(get_db), user: U
         db.add(Tatami(tournament_id=t.id, name=f"Tatami {i+1}"))
     db.commit()
     audit(db, user, "created tournament", "tournament", t.id)
-    return to_dict(t, db)
+    return to_dict(t, db, user)
 
 @router.get("/{tid}")
-def get_tournament(tid: int, db: Session = Depends(get_db)):
+def get_tournament(tid: int, db: Session = Depends(get_db),
+                   user: User | None = Depends(get_optional_user)):
     t = db.get(Tournament, tid)
     if not t:
         raise HTTPException(404, "Not found")
     cats = db.query(TournamentCategory).filter_by(tournament_id=tid).all()
-    return {**to_dict(t, db), "categories": [{"id": c.id, "name": c.name, "gender": c.gender, "age_min": c.age_min,
+    return {**to_dict(t, db, user), "categories": [{"id": c.id, "name": c.name, "gender": c.gender, "age_min": c.age_min,
             "age_max": c.age_max, "weight_min": c.weight_min, "weight_max": c.weight_max} for c in cats]}
 
 class TournamentUpdate(BaseModel):
@@ -203,13 +245,17 @@ def list_regs(tid: int, request: Request, status: str = "", pg: dict = Depends(p
         show_status = staff or (user and a and (
             a.created_by == user.id or a.user_id == user.id
             or (club and club.owner_id == user.id)))
+        # B1: roster rows carry derived bands from their OWN category, and
+        # only when the registration is approved (the relevant public fact).
+        # Exact birth_year/weight and internal seed are not public.
+        from app.services.bands import bands_for_category
+        ag, wc = bands_for_category(cat) if r.status == "approved" else ("—", "—")
         out.append({"id": r.id, "athlete_id": r.athlete_id, "athlete": a.full_name if a else "?",
                     "category_id": r.category_id, "category": cat.name if cat else "?",
                     "club_id": club.id if club else None, "club": club.name if club else "—",
-                    "birth_year": a.birth_year if a else None,
                     "gender": a.gender if a else None,
-                    "weight": a.weight_kg if a else None,
-                    "seed": r.seed, "checked_in": r.checked_in,
+                    "age_group": ag, "weight_class": wc,
+                    "checked_in": r.checked_in,
                     "weigh_in_kg": r.weigh_in_kg if staff else None,
                     "weigh_in_status": r.weigh_in_status,
                     "status": r.status if show_status else None,

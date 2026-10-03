@@ -396,7 +396,7 @@ function Participants({ tid }: { tid: string }) {
               <Link to={`/athletes/${r.athlete_id}`} className="hover:underline">{r.athlete}</Link>
             </div>
             <div className="text-xs" style={{ color: 'var(--muted)' }}>
-              {r.club && r.club !== '—' ? `${r.club} · ` : ''}{[r.gender, r.birth_year, r.weight != null ? `${r.weight}${t('w.kg')}` : null].filter(Boolean).join(' · ')}
+              {r.club && r.club !== '—' ? (<>{r.club_id ? <Link to={`/clubs/${r.club_id}`} className="hover:underline font-semibold">{r.club}</Link> : r.club}{' · '}</>) : ''}{[r.gender, r.age_group, r.weight_class].filter((x) => x && x !== '—').join(' · ')}
             </div>
             <div className="text-xs" style={{ color: 'var(--muted)' }}>{r.weigh_in_kg ? `${r.weigh_in_kg}${t('w.kg')} · ` : ''}{r.weigh_in_status !== 'pending' ? t(WI_LABEL[r.weigh_in_status] ?? 'w.pending') : t('p.notWeighed')}
               {r.status ? <> · <Badge tone={r.status === 'approved' ? 'gold' : r.status === 'pending' ? 'gray' : 'live'}>{ST_LABEL[r.status] ?? r.status}</Badge></> : null}

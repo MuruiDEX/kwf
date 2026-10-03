@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLang } from '../../i18n';
 import { api, errMsg } from '../../lib/api';
+import { SEARCH_SUGGEST_LIMIT, buildSearchUrl, useDebouncedValue } from '../../lib/search';
 import { useAuth, notify } from '../../auth';
 import type { Role, SearchResult } from '../../types/api';
 
@@ -18,16 +19,18 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
   const qc = useQueryClient();
   const go = (p: string) => { nav(p); onClose(); };
 
+  // Wave A2: shared search contract (same /api/search, suggestions limit=5).
+  // Kept as a direct fetch (not react-query) so the palette stays instant and
+  // never warms the /search page cache with partial keystrokes.
+  const dq = useDebouncedValue(q, 250);
   useEffect(() => {
-    if (!open || q.length < 2) { setRes(null); return; }
+    if (!open || dq.trim().length < 2) { setRes(null); return; }
     let cancelled = false;
-    const t = setTimeout(() => {
-      api<SearchResult>(`/api/search?q=${encodeURIComponent(q)}`)
-        .then(r => { if (!cancelled) setRes(r); })
-        .catch(() => {});
-    }, 250);
-    return () => { cancelled = true; clearTimeout(t); };
-  }, [q, open]);
+    api<SearchResult>(buildSearchUrl(dq.trim(), ['athletes', 'clubs', 'tournaments'], SEARCH_SUGGEST_LIMIT))
+      .then(r => { if (!cancelled) setRes(r); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [dq, open]);
   useEffect(() => setIdx(0), [q, res]);
 
   const tid = useMemo(() => {
@@ -98,8 +101,10 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
         </div>
         {res && (
           <div className="mt-1 px-3 py-2 text-sm border-t" style={{ borderColor: 'var(--border)' }}>
+            {res.tournaments?.map((x) => <button key={'t' + x.id} className="block py-1 font-semibold" onClick={() => go(`/tournaments/${x.id}`)}>🏆 {x.name}</button>)}
             {res.athletes?.map((a) => <button key={'a' + a.id} className="block py-1" onClick={() => go(`/athletes/${a.id}`)}>{a.name}</button>)}
             {res.clubs?.map((c) => <button key={'c' + c.id} className="block py-1" onClick={() => go(`/clubs/${c.id}`)}>{c.name}</button>)}
+            <button className="block py-1 text-[12px] font-bold underline" style={{ color: 'var(--muted)' }} onClick={() => go(`/search?q=${encodeURIComponent((dq.trim() || q.trim()))}`)}>{t('cmdk.fullSearch')}</button>
           </div>
         )}
         <div className="flex gap-3 px-3 py-2 text-[11px] border-t" style={{ borderColor: 'var(--border)', color: 'var(--muted)' }}>
