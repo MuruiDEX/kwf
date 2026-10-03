@@ -816,6 +816,7 @@ function ApplyCard({ tid, categories }: { tid: string; categories: Category[] })
   return (
     <div className="card p-4 space-y-2">
       <h3 className="font-bold">{t('self.title')}</h3>
+      {!closed && tt?.status === 'registration' && <div><Badge tone="gold">{t('reg.open')}</Badge></div>}
       {closed && <div className="text-sm" style={{ color: 'var(--muted)' }}>{t('self.closed')}</div>}
       {!user && <div className="text-sm" style={{ color: 'var(--muted)' }}>{t('self.loginHint')}</div>}
       {user && !isAthlete && <div className="text-sm" style={{ color: 'var(--muted)' }}>{t('self.athletesOnly')}</div>}

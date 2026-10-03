@@ -186,7 +186,9 @@ export function Results({ tid }: { tid: string }) {
       <div>
         <h3 className="font-bold mb-2">{t('res.champs')}</h3>
         <DataTable cols={[t('res.category'), t('res.champ'), t('res.finalists')]}
-          rows={data.standings.map((s, i: number) => [s.category, s.champion, s.finalists.join(', ') || '—'])} />
+          rows={data.standings.map((s, i: number) => [s.category,
+            s.champion_id ? <Link key={`ch${i}`} to={`/athletes/${s.champion_id}`} className="hover:underline font-semibold">{s.champion}</Link> : s.champion,
+            s.finalists.join(', ') || '—'])} />
       </div>
       {!!data.medal_table?.length && (
         <div>
@@ -194,7 +196,7 @@ export function Results({ tid }: { tid: string }) {
           <DataTable cols={[t('res.athlete'), t('res.club'), t('res.gold'), t('res.titles')].concat(canIssue ? [t('res.diploma')] : [])}
             rows={data.medal_table.map((m): ReactNode[] => {
               const clubCell: ReactNode = m.club_id ? <Link key={`c${m.athlete_id}`} to={`/clubs/${m.club_id}`} className="hover:underline font-semibold">{m.club}</Link> : m.club;
-              const row: ReactNode[] = [m.athlete, clubCell, m.gold, m.titles.join(', ')];
+              const row: ReactNode[] = [<Link key={`a${m.athlete_id}`} to={`/athletes/${m.athlete_id}`} className="hover:underline font-semibold">{m.athlete}</Link>, clubCell, m.gold, m.titles.join(', ')];
               if (canIssue) row.push(<DiplomaButton key={m.athlete_id} tid={tid} athleteId={m.athlete_id} category={m.titles[0] ?? ''} />);
               return row;
             })} />
@@ -233,8 +235,10 @@ export function PodiumBlock({ tid }: { tid: string }) {
     } catch (e: unknown) { setMsg(`${t('common.err')}: ` + errMsg(e)); }
     setBusy(false);
   };
+  // B4: athlete/club names link to public profiles (ids already in payload).
   const spot = (s: Podium['gold'], place: string) =>
-    s ? <span>{place}. {s.name} <span style={{ color: 'var(--muted)' }}>{s.club}</span></span> : <span>—</span>;
+    s ? <span>{place}. <Link to={`/athletes/${s.id}`} className="hover:underline font-semibold">{s.name}</Link>{' '}
+      <span style={{ color: 'var(--muted)' }}>{s.club_id ? <Link to={`/clubs/${s.club_id}`} className="hover:underline">{s.club}</Link> : s.club}</span></span> : <span>—</span>;
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2">
@@ -247,7 +251,7 @@ export function PodiumBlock({ tid }: { tid: string }) {
           <div className="font-extrabold">{p.category}</div>
           <div>🥇 {spot(p.gold, '1')}</div>
           <div>🥈 {spot(p.silver, '2')}</div>
-          {!!p.bronze.length && <div>🥉 {p.bronze.map((b) => b.name).join(', ')}</div>}
+          {!!p.bronze.length && <div>🥉 {p.bronze.map((b, i) => <span key={b.id}>{i > 0 ? ', ' : ''}<Link to={`/athletes/${b.id}`} className="hover:underline font-semibold">{b.name}</Link></span>)}</div>}
         </div>
       ))}
     </div>

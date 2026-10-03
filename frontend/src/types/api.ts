@@ -214,6 +214,27 @@ export interface AthleteHistoryItem {
   result: 'champion' | 'finalist' | 'semifinalist' | 'participant' | 'registered';
 }
 
+export interface AthleteStats {
+  fights: number;
+  win_rate: number;
+  titles: number;
+}
+
+export interface AthleteMedals {
+  gold: number;
+  silver: number;
+  bronze: number;
+}
+
+export interface AthleteRecentItem {
+  tournament_id: number;
+  tournament: string;
+  date: string;
+  category: string;
+  result: AthleteHistoryItem['result'];
+  place: number | null;
+}
+
 export interface AthleteProfile extends Omit<Athlete, 'club_id'> {
   first_name: string;
   last_name: string;
@@ -223,12 +244,17 @@ export interface AthleteProfile extends Omit<Athlete, 'club_id'> {
   club: string;
   club_id: number | null;
   history: AthleteHistoryItem[];
+  /** B3: dense rank (ties share), computed stats, finished-only medals. */
+  rank: number;
+  stats: AthleteStats;
+  medals: AthleteMedals;
+  recent_results: AthleteRecentItem[];
 }
 
 /** B1: GET /api/athletes/{id}/scoped — public fields + exact values.
  *  Explicit allowlist (coach scope or linked self); never user_id/created_by.
  */
-export interface ScopedAthlete extends AthleteProfile {
+export interface ScopedAthlete extends Omit<AthleteProfile, 'rank' | 'stats' | 'medals' | 'recent_results'> {
   birth_year: number;
   weight: number;
 }
@@ -351,6 +377,8 @@ export interface PodiumSpot {
   id: number;
   name: string;
   club: string;
+  /** B4: deep-link to the public club profile (additive, name was public). */
+  club_id?: number | null;
 }
 
 export interface Podium {

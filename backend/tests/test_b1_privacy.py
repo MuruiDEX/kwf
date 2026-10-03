@@ -213,14 +213,16 @@ def test_bands_pending_only_fallback():
 
 
 def test_no_parent_implied():
-    # logged-in but unrelated users get nothing exact through any B1 path
+    # logged-in but unrelated users get nothing exact through any B1 path.
+    # B5: foreign users get 404 (no oracle, no codes) on athlete documents.
     coach = _coach()
     owner = _coach()
     aid = _mk_athlete(owner, last="B1Foreign")
     assert client.get(f"/api/athletes/{aid}/scoped", headers=coach).status_code in (403, 404)
     assert "birth_year" not in client.get(f"/api/athletes/{aid}").json()
-    docs = client.get(f"/api/athletes/{aid}/documents", headers=coach).json()
-    assert isinstance(docs, list)
+    r = client.get(f"/api/athletes/{aid}/documents", headers=coach)
+    assert r.status_code == 404
+    assert "code" not in r.text
 
 
 def test_rate_limits_new():

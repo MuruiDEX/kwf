@@ -63,6 +63,23 @@ export function useTournaments(q = '', status = '', opt?: Opt<Paged<Tournament>>
   const qs = p.toString();
   return useQuery<Paged<Tournament>>({ queryKey: qk.tournaments(q, status, city, from, to, mine), queryFn: () => api(`/api/tournaments${qs ? `?${qs}` : ''}`), ...opt });
 }
+// B4: paged catalog reads for show-more. Separate key/hook so the legacy
+// useTournaments contract (first page, backend default limit) stays
+// byte-identical for old consumers (Home, Cabinet). Single slice per
+// render (limit = pages * PAGE_SIZE, offset 0) — no duplicates by design.
+export function useTournamentsPage(q = '', status = '', extra?: { city?: string; from?: string; to?: string }, limit = 20) {
+  const city = extra?.city ?? '', from = extra?.from ?? '', to = extra?.to ?? '';
+  const capped = Math.max(1, Math.min(limit, 500));
+  const p = new URLSearchParams();
+  if (q) p.set('q', q);
+  if (status) p.set('status', status);
+  if (city) p.set('city', city);
+  if (from) p.set('date_from', from);
+  if (to) p.set('date_to', to);
+  p.set('limit', String(capped));
+  const qs = p.toString();
+  return useQuery<Paged<Tournament>>({ queryKey: ['tournaments-page', q, status, city, from, to, capped], queryFn: () => api(`/api/tournaments?${qs}`) });
+}
 export function usePublicCities(limit = 50) {
   return useQuery<{ items: { city: string; count: number }[] }>({ queryKey: ['public-cities', limit], queryFn: () => api(`/api/public/cities?limit=${limit}`), staleTime: 120_000 });
 }

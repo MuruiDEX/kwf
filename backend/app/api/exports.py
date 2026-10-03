@@ -400,7 +400,10 @@ def podium(tid: int, db: Session = Depends(get_db)):
             if not a:
                 return None
             club = clubmap.get(a.club_id) if a.club_id else None
-            return {"id": a.id, "name": a.full_name, "club": club.name if club else "—"}
+            # B4: additive club_id for the public club-profile deep-link.
+            # Same batched clubmap — +0 SQL. Never PII: name was already public.
+            return {"id": a.id, "name": a.full_name, "club": club.name if club else "—",
+                    "club_id": club.id if club else None}
         out.append({"category_id": p["category_id"], "category": p["category"],
                     "gold": nm(p["gold_id"]), "silver": nm(p["silver_id"]),
                     "bronze": [nm(b) for b in p["bronze_ids"] if nm(b)]})

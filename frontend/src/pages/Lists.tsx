@@ -100,6 +100,10 @@ export function AthleteDetail() {
           {data.gender === 'male' ? t('a.men') : t('a.women')} · {data.age_group} · {data.weight_class} · {data.level} · {data.country}
         </div>
         <div className="mt-1 text-sm">{t('a.club')}: {data.club_id ? <Link to={`/clubs/${data.club_id}`}>{data.club}</Link> : data.club} · {t('a.points')}: <b>{data.points}</b> · {t('a.wl')}: {data.wins}-{data.losses}</div>
+        <div className="mt-1 text-sm" data-testid="athlete-stats">
+          <b>#{data.rank}</b> {t('a.rank')} · {t('a.winRate')}: {Math.round(data.stats.win_rate * 100)}% · 🏆 {data.stats.titles}
+        </div>
+        <div className="mt-1 text-sm" data-testid="athlete-medals">🥇 {data.medals.gold} · 🥈 {data.medals.silver} · 🥉 {data.medals.bronze}</div>
         {can('athletes.manage') && (
           <button className="btn-ghost text-xs !py-1.5 mt-2" onClick={() => (edit ? setEdit(false) : openEdit())}>✎ {t('common.edit')}</button>
         )}
@@ -118,6 +122,21 @@ export function AthleteDetail() {
           {msg && <div className="form-err" role="alert">{msg}</div>}
           <button className="btn-primary text-sm justify-center w-full" onClick={save} disabled={busy}>{busy ? '…' : t('common.save')}</button>
         </div>
+      )}
+      {!!data.recent_results.length && (
+        <>
+          <h2 className="font-bold">{t('a.recent')}</h2>
+          <div className="space-y-2" data-testid="athlete-recent">
+            {data.recent_results.map((r) => (
+              <Link key={`${r.tournament_id}-${r.category}`} to={`/tournaments/${r.tournament_id}`}
+                    className="card card-hover p-3 flex items-center gap-3" data-testid="athlete-recent-hit">
+                <span className="font-bold text-sm flex-1 min-w-0 truncate">{r.tournament}</span>
+                <span className="text-xs flex-none" style={{ color: 'var(--muted)' }}>{r.date} · {r.category}</span>
+                <Badge tone={r.place === 1 ? 'gold' : 'gray'}>{r.place ? `#${r.place}` : (RESULT[r.result] ?? r.result)}</Badge>
+              </Link>
+            ))}
+          </div>
+        </>
       )}
       <h2 className="font-bold">{t('a.history')}</h2>
       {!data.history.length ? <div className="card p-4 text-sm" style={{ color: 'var(--muted)' }}>{t('a.noHist')}</div> :

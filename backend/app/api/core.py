@@ -82,7 +82,16 @@ def athlete_profile(aid: int, db: Session = Depends(get_db)):
     by_bracket: dict[int, list[BracketMatch]] = {}
     for m in all_matches:
         by_bracket.setdefault(m.bracket_id, []).append(m)
+    # B3: finished-podium lookup per (tournament, category), computed from
+    # the ALREADY loaded brackets/matches (no new queries). place is only
+    # set for actual finished podiums; anything else stays None.
+    from app.api.exports import _assemble_podium
+    pod_by_tc: dict[tuple[int, int], dict] = {}
+    for b in brackets:
+        for e in _assemble_podium([b], cmap, by_bracket):
+            pod_by_tc.setdefault((b.tournament_id, e["category_id"]), e)
     history = []
+    places: list[int | None] = []
     for r in regs:
         t = tmap.get(r.tournament_id)
         c = cmap.get(r.category_id)
@@ -90,6 +99,30 @@ def athlete_profile(aid: int, db: Session = Depends(get_db)):
         history.append({"tournament_id": r.tournament_id, "tournament": t.name if t else "?",
                         "date": str(t.start_date) if t else "", "category": c.name if c else "?",
                         "result": _placement_from_matches(by_bracket.get(b.id, []) if b else [], aid)})
+        e = pod_by_tc.get((r.tournament_id, r.category_id))
+        if e is not None and e["gold_id"] == aid:
+            places.append(1)
+        elif e is not None and e["silver_id"] == aid:
+            places.append(2)
+        elif e is not None and aid in e["bronze_ids"]:
+            places.append(3)
+        else:
+            places.append(None)
+    order = sorted(range(len(regs)),
+                   key=lambda i: (history[i]["date"] or "", regs[i].tournament_id),
+                   reverse=True)[:5]
+    recent = [{"tournament_id": history[i]["tournament_id"],
+               "tournament": history[i]["tournament"],
+               "date": history[i]["date"], "category": history[i]["category"],
+               "result": history[i]["result"], "place": places[i]} for i in order]
+    gold = sum(1 for p in places if p == 1)
+    silver = sum(1 for p in places if p == 2)
+    bronze = sum(1 for p in places if p == 3)
+    fights = (a.wins or 0) + (a.losses or 0)
+    # B3: dense rank shared on ties: 1 + COUNT(points > mine).
+    # Single extra query; total profile budget stays <= 10 SELECTs.
+    from sqlalchemy import func as _func
+    rank = db.query(_func.count(Athlete.id)).filter(Athlete.points > (a.points or 0)).scalar() + 1
     # B1: public profile exposes derived bands only (exact fields live
     # behind GET /api/athletes/{aid}/scoped + /api/me/athlete).
     from app.services.bands import public_bands
@@ -98,7 +131,13 @@ def athlete_profile(aid: int, db: Session = Depends(get_db)):
             "gender": a.gender, "age_group": ag, "weight_class": wc,
             "level": a.level, "country": a.country,
             "club": club.name if club else "—", "club_id": a.club_id,
-            "points": a.points, "wins": a.wins, "losses": a.losses, "history": history}
+            "points": a.points, "wins": a.wins, "losses": a.losses,
+            "rank": int(rank),
+            "stats": {"fights": fights,
+                      "win_rate": round((a.wins or 0) / fights, 3) if fights else 0,
+                      "titles": gold},
+            "medals": {"gold": gold, "silver": silver, "bronze": bronze},
+            "recent_results": recent, "history": history}
 
 
 @router.get("/api/athletes/{aid}/scoped")
@@ -294,7 +333,9 @@ def rankings(gender: str = "", country: str = "", weight_min: float = 0, weight_
         q = q.filter(Athlete.gender == gender)
     if country:
         q = q.filter(Athlete.country == country)
-    q = q.order_by(Athlete.points.desc())
+    # B3: id ASC tie-break makes order (and positional rank) deterministic
+    # for equal points. Response shape untouched.
+    q = q.order_by(Athlete.points.desc(), Athlete.id.asc())
     rows, total = paginate(q, pg["limit"], pg["offset"])
     # B1: public rankings expose no exact weight (filters by weight still work).
     return envelope([{"rank": pg["offset"] + i + 1, "id": a.id, "name": a.full_name, "club_id": a.club_id,
@@ -459,10 +500,25 @@ def athlete_documents(aid: int, db: Session = Depends(get_db),
     Requires login (codes are unguessable but enumerable per athlete).
     `spravka` kind is excluded — it carries PII and has its own scoped
     endpoint (`GET /api/spravki/{code}.pdf` with athlete-scope check).
+
+    B5: ownership/scope gate (mirrors `_spravki_scope`). Document codes are
+    bearer secrets for the public verify/PDF flow, so foreign athletes'
+    metadata is never enumerated: athletes.manage -> require_athlete_scope,
+    else linked athlete self, else 404 (no oracle, same as spravki PDF).
     """
+    from app.core.permissions import has_perm, has_role
     a = db.get(Athlete, aid)
     if not a:
         raise HTTPException(404, "Not found")
+    try:
+        if has_perm(db, user, "athletes.manage"):
+            require_athlete_scope(aid, db, user)
+        elif not (has_role(db, user, "athlete") and a.user_id == user.id):
+            raise HTTPException(403, "Foreign athlete")
+    except HTTPException as e:
+        if e.status_code == 403:
+            raise HTTPException(404, "Not found")
+        raise
     rows = db.query(Document).filter(
         Document.athlete_id == aid,
         Document.kind.in_(["participation", "diploma", "protocol"])).order_by(
