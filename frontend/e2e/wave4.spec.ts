@@ -108,6 +108,29 @@ test('coach bulk-registers own athletes in one go', async ({ page, request }) =>
   await expect(section.getByText('Уже заявлены (2)')).toBeVisible();
 });
 
+test('B6: athlete sees approval notification in cabinet', async ({ page, request }) => {
+  const athEmail = `${uid}b6@kwf.org`;
+  await registerAPI(request, athEmail, 'athlete');
+  const athToken = await apiLogin(request, athEmail, 'secret123');
+  const AH = { Authorization: `Bearer ${athToken}` };
+  const orgToken = await apiLogin(request, ORG.email, ORG.password);
+  const H = { Authorization: `Bearer ${orgToken}` };
+  const { tid, cat } = await mkTournament(request, H, `W4 Cup ${uid}b6`);
+  const kidAid = (await (await request.post(`${API}/api/athletes`, {
+    headers: H, data: { first_name: 'W4', last_name: 'B6Kid', gender: 'male', birth_year: 2000, weight_kg: 68, country: 'KZ' },
+  })).json()).id as number;
+  await request.post(`${API}/api/athletes/${kidAid}/claim`, { headers: AH });
+  const rid = (await (await request.post(`${API}/api/tournaments/${tid}/registrations`, {
+    headers: AH, data: { athlete_id: kidAid, category_id: cat },
+  })).json()).id as number;
+  await uiLogin(page, athEmail, 'secret123');
+  await request.post(`${API}/api/tournaments/${tid}/registrations/${rid}/status`, {
+    headers: H, data: { status: 'rejected' },
+  });
+  await page.goto('/me');
+  await expect(page.getByText('отклонена').first()).toBeVisible({ timeout: 15000 });
+});
+
 test('organizer filters pending and approves', async ({ page, request }) => {
   const orgToken = await apiLogin(request, ORG.email, ORG.password);
   const H = { Authorization: `Bearer ${orgToken}` };

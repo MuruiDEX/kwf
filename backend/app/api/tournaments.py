@@ -514,6 +514,30 @@ def reg_status(tid: int, reg_id: int, data: RegStatusChange, db: Session = Depen
     r.review_note = data.note[:255]
     db.commit()
     audit(db, user, f"registration -> {data.status}", "registration", r.id)
+    # B6: moderation happened (committed above) — now tell the other side.
+    # Notification failure must never roll back the decision: emit_event
+    # commits on its own and only appends rows.
+    if data.status in ("approved", "rejected"):
+        from app.services.notifications import emit_event, coach_of_athlete
+        a = db.get(Athlete, r.athlete_id)
+        c = db.get(TournamentCategory, r.category_id)
+        if a and c:
+            verb = "одобрена" if data.status == "approved" else "отклонена"
+            to = {u for u in (a.user_id, coach_of_athlete(db, r.athlete_id))
+                             if u and u != user.id}
+            if to:
+                emit_event(db, "registration", sorted(to),
+                           f"Заявка {verb}: {a.full_name} → {c.name} (t{tid})",
+                           link=f"/tournaments/{tid}?tab=participants")
+    elif data.status == "withdrawn":
+        if t.created_by and t.created_by != user.id:
+            from app.services.notifications import emit_event
+            a = db.get(Athlete, r.athlete_id)
+            c = db.get(TournamentCategory, r.category_id)
+            emit_event(db, "registration", [t.created_by],
+                       f"Заявка отозвана: {a.full_name if a else r.athlete_id} → "
+                       f"{c.name if c else '?'} (t{tid})",
+                       link=f"/tournaments/{tid}?tab=participants")
     return {"ok": True, "status": r.status}
 
 class BulkRegStatus(BaseModel):
@@ -554,6 +578,28 @@ def bulk_reg_status(tid: int, data: BulkRegStatus, db: Session = Depends(get_db)
     db.commit()
     if updated:
         audit(db, user, f"bulk registration -> {data.status} x{len(updated)}", "tournament", tid)
+    # B6: same applicant-side fan-out as single moderation. Batched lookups
+    # (3 queries total, not per-id): regs -> athletes -> categories. Per-reg
+    # emit keeps dedup semantics identical to the single path; updated is
+    # capped at 100 ids by schema, so the loop is bounded.
+    if data.status in ("approved", "rejected") and updated:
+        from app.services.notifications import emit_event, coach_of_athlete
+        regs = db.query(Registration).filter(Registration.id.in_(updated)).all()
+        amap = {a.id: a for a in db.query(Athlete).filter(
+            Athlete.id.in_({r.athlete_id for r in regs})).all()} if regs else {}
+        cmap = {c.id: c for c in db.query(TournamentCategory).filter(
+            TournamentCategory.id.in_({r.category_id for r in regs})).all()} if regs else {}
+        verb = "одобрена" if data.status == "approved" else "отклонена"
+        for r in regs:
+            a, c = amap.get(r.athlete_id), cmap.get(r.category_id)
+            if not a or not c:
+                continue
+            to = {u for u in (a.user_id, coach_of_athlete(db, r.athlete_id))
+                  if u and u != user.id}
+            if to:
+                emit_event(db, "registration", sorted(to),
+                           f"Заявка {verb}: {a.full_name} → {c.name} (t{tid})",
+                           link=f"/tournaments/{tid}?tab=participants")
     return {"updated": updated, "errors": errors}
 
 @router.post("/{tid}/registrations/{reg_id}/move")
