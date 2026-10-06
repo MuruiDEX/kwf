@@ -3,8 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import settings
 from app.core.db import Base, engine
-import app.models.user, app.models.club_athlete, app.models.tournament, app.models.competition, app.models.misc
-from app.api import auth, tournaments, core, live, exports, admin, spravki, training
+import app.models.user, app.models.club_athlete, app.models.tournament, app.models.competition, app.models.misc, app.models.guardian, app.models.training_group, app.models.coach_profile
+from app.api import auth, tournaments, core, live, exports, admin, spravki, training, guardian, groups, coach
 from app.core.ratelimit import RateLimitMiddleware
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
@@ -48,6 +48,9 @@ app.include_router(exports.router)
 app.include_router(admin.router)
 app.include_router(spravki.router)
 app.include_router(training.router)
+app.include_router(guardian.router)
+app.include_router(groups.router)
+app.include_router(coach.router)
 
 @app.get("/api/health")
 def health():

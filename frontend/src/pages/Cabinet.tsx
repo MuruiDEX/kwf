@@ -7,10 +7,19 @@ import { api, errMsg, pageItems } from '../lib/api';
 import { useAuth, notify } from '../auth';
 import { Badge, Skeleton } from '../components/ui/core';
 import { OrgRequestForm } from './AuthForms';
+import { OrganizerDashboard } from './Organizer';
 import { SpravkiSection } from './Spravki';
 import { BulkRegSection } from './BulkReg';
 import { ScheduleSection } from './Schedule';
 import { useNotes, useTournaments, useMyAthletes, useMyClubs, useMyRegistrations } from '../lib/queries';
+import { GuardianSection } from './Guardian';
+import { CoachApprovalSection } from './CoachApproval';
+import { AthleteDashboard, MyApplicationsEmpty } from './AthleteDashboard';
+import { AthleteCreateSection } from './AthleteCreate';
+import { GroupsSection } from './Groups';
+import { ProfileEditSection, ProfileAvatar } from './ProfileEdit';
+import { ClubCreateSection } from './ClubCreate';
+import { CoachDashboard } from './CoachDashboard';
 import type { Athlete, Club, KwfNotification, Tournament } from '../types/api';
 
 function Action({ to, icon: Icon, label, hint }: { to: string; icon: LucideIcon; label: string; hint: string }) {
@@ -91,15 +100,11 @@ export function Cabinet({ coachOnly = false }: { coachOnly?: boolean } = {}) {
         </div>
       </div>
 
-      {/* profile */}
+      {/* profile — one unified account/profile card (avatar from profile, name is User.full_name) */}
       <section className="card p-5" aria-label={t('me.profile')}>
         <div className="flex flex-wrap items-center gap-3">
-          <span className="grid place-items-center w-12 h-12 rounded-full font-black text-lg flex-none"
-            style={{ background: 'var(--navy)', color: 'var(--bg)' }} aria-hidden>
-            {(user.full_name || user.email || '?').slice(0, 1).toUpperCase()}
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="font-extrabold leading-tight break-words">{user.full_name || '—'}</div>
+          <ProfileAvatar name={user.full_name || user.email} />
+          <div className="min-w-0 flex-1">            <div className="font-extrabold leading-tight break-words">{user.full_name || '—'}</div>
             <div className="text-sm break-all" style={{ color: 'var(--muted)' }}>{user.email}</div>
             <div className="mt-1 flex gap-1 flex-wrap">{roles.map((r) => (
               <Badge key={r} tone="gold">{t(`role.${r}`)}</Badge>
@@ -111,6 +116,9 @@ export function Cabinet({ coachOnly = false }: { coachOnly?: boolean } = {}) {
         </div>
       </section>
 
+      {/* self profile editing (Coach 2.0 P1) */}
+      <ProfileEditSection />
+
       {/* cabinet switcher (UI context only — permissions untouched) */}
       {showSwitcher && (
         <div className="tabs" role="tablist" aria-label={t('cab.view')}>
@@ -121,6 +129,9 @@ export function Cabinet({ coachOnly = false }: { coachOnly?: boolean } = {}) {
           ))}
         </div>
       )}
+
+      {/* coach dashboard (Coach 2.0 P3): composes cached queries only */}
+      {showCoach && isCoach && <CoachDashboard clubs={myClubs} athletes={myAthletes} isCoach={isCoach} />}
 
       {/* stats (only real data) */}
       <section className="grid grid-cols-2 gap-3" aria-label="stats">
@@ -149,6 +160,9 @@ export function Cabinet({ coachOnly = false }: { coachOnly?: boolean } = {}) {
         </div>
       </section>
 
+      {/* organizer dashboard (create CTA + own tournaments) */}
+      {showOrg && canOrganize && <OrganizerDashboard mine={mine} />}
+
       {/* coach: my athletes & clubs */}
       {showCoach && (isCoach || (can('athletes.manage') && myAthletes.length > 0)) && (
         <section className="space-y-3" aria-label={t('coach.myAthletes')}>
@@ -172,20 +186,37 @@ export function Cabinet({ coachOnly = false }: { coachOnly?: boolean } = {}) {
               </div>
             )}
           </div>
+          {/* D2 P1: athlete creation (same gate as the roster above) */}
+          {myAthletesRaw && <AthleteCreateSection clubs={myClubs} />}
         </section>
       )}
 
       {/* spravki (Wave 1): coach/organizer documents, data reused from above */}
       {showCoach && (isCoach || can('athletes.manage')) && <SpravkiSection athletes={myAthletes} />}
 
+      {/* groups (D2 P2): coach training squads */}
+      {showCoach && (isCoach || can('athletes.manage')) && <GroupsSection clubs={myClubs} athletes={myAthletes} />}
+
+      {/* club self-create (Coach 2.0 P2): coaches only, owner forced server-side */}
+      {showCoach && isCoach && <ClubCreateSection />}
+
+      {/* athlete dashboard (P1): composes cached queries, read-only */}
+      {isAthlete && <AthleteDashboard />}
+
       {/* my applications (Wave 4): athlete sees own regs with statuses */}
       {isAthlete && <MyApplications />}
+
+      {/* guardian approval queue (Guardian 2.0): incoming links the viewer may decide */}
+      {showCoach && (isCoach || can('athletes.manage')) && <CoachApprovalSection />}
 
       {/* bulk registration (Wave 2): coach registers own athletes in one go */}
       {showCoach && (isCoach || can('athletes.manage')) && <BulkRegSection athletes={myAthletes} tournaments={tournaments} />}
 
       {/* training schedule: coach's own clubs (club ownership, any primary role) */}
       {showCoach && (hasRole('coach') || hasRole('admin')) && <ScheduleSection clubs={myClubs} />}
+
+      {/* guardian: approved wards, read-only (C3, data-driven — no role check) */}
+      <GuardianSection />
 
       {/* activity */}
       <section className="space-y-3" aria-label={t('me.activity')}>
@@ -236,7 +267,7 @@ function MyApplications() {
   const [msg, setMsg] = useState<string>('');
   const [busyId, setBusyId] = useState<number | null>(null);
   if (isLoading) return <Skeleton className="h-24" />;
-  if (!regs?.length) return null;
+  if (!regs?.length) return <MyApplicationsEmpty />;
   const drop = async (r: { id: number; tournament_id: number }) => {
     setBusyId(r.id);
     setMsg('');

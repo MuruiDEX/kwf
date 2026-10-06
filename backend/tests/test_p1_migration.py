@@ -65,7 +65,26 @@ def test_upgrade_legacy_db_keeps_data(tmp_path):
         # Wave 3/4 columns land on legacy databases too (idempotent upgrades)
         assert {r["name"] for r in inspect(eng).get_columns("registrations")} >= {"status", "review_note"}
         assert "user_id" in {r["name"] for r in inspect(eng).get_columns("athletes")}
-        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0010_training_sessions"
+        assert c.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0014_coach_profiles"
+        # C1: guardian_links lands on legacy databases too (idempotent upgrade)
+        assert "guardian_links" in inspect(eng).get_table_names()
+        assert {r["name"] for r in inspect(eng).get_columns("guardian_links")} >= {
+            "guardian_user_id", "athlete_id", "status", "created_at", "decided_at", "decided_by"}
+        # D2 P2: training groups land on legacy databases too
+        assert "training_groups" in inspect(eng).get_table_names()
+        assert "training_group_members" in inspect(eng).get_table_names()
+        assert {r["name"] for r in inspect(eng).get_columns("training_groups")} >= {
+            "club_id", "name", "is_active"}
+        assert {r["name"] for r in inspect(eng).get_columns("training_group_members")} >= {
+            "group_id", "athlete_id"}
+        # D2 P3: nullable session -> group link lands on legacy databases too
+        assert "group_id" in {r["name"] for r in inspect(eng).get_columns("training_sessions")}
+        # Coach 2.0 P1: coach profiles + club description/logo land too
+        assert "coach_profiles" in inspect(eng).get_table_names()
+        assert {r["name"] for r in inspect(eng).get_columns("coach_profiles")} >= {
+            "user_id", "bio", "is_public"}
+        assert {"description", "logo_path"} <= \
+            {r["name"] for r in inspect(eng).get_columns("clubs")}
         assert "user_permissions" in inspect(eng).get_table_names()
         idx = {i["name"] for i in inspect(eng).get_indexes("bracket_matches")}
         assert {"ix_bracket_round_pos", "ix_bracket_status"} <= idx

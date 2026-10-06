@@ -96,6 +96,87 @@ export interface MyRegistration {
   weigh_in_status: WeighInStatus;
 }
 
+/** C3: GET /api/guardian/athletes item — approved ward, public-list shape
+ *  (derived bands, never exact birth_year/weight). Reuses Athlete. */
+export type Ward = Athlete & {
+  /** Club display name (backend-provided, "—" when none). */
+  club?: string;
+};
+
+/** C2: GET /api/guardian/registrations item — ward registration + ward name. */
+export interface WardRegistration extends MyRegistration {
+  athlete: string;
+}
+
+/** Guardian 2.0: GET /api/guardian/links — own outgoing + actionable incoming. */
+export interface GuardianLink {
+  id: number;
+  guardian_user_id: number;
+  athlete_id: number;
+  status: 'pending' | 'approved' | 'rejected' | 'revoked';
+}
+export interface GuardianLinks {
+  outgoing: GuardianLink[];
+  incoming: GuardianLink[];
+}
+
+/** Coach 2.0 P1: GET/PUT /api/auth/profile (own profile, no secrets). */
+export interface MyProfile {
+  user_id: number;
+  full_name: string;
+  bio: string;
+  city: string;
+  country: string;
+  specialization: string;
+  experience_years: number | null;
+  is_public: boolean;
+  avatar: string | null;
+}
+
+/** Coach 2.0 P3: GET /api/coaches item — strict public allowlist. */
+export interface CoachDirectoryItem {
+  user_id: number;
+  name: string;
+  city: string;
+  country: string;
+  specialization: string;
+  avatar: string | null;
+  club: { id: number; name: string } | null;
+  athletes_count: number;
+}
+
+/** Coach 2.0 P3: GET /api/coaches/{id} — derived real statistics only. */
+export interface CoachPublicProfile {
+  user_id: number;
+  name: string;
+  city: string;
+  country: string;
+  specialization: string;
+  bio: string;
+  experience_years: number | null;
+  avatar: string | null;
+  clubs: { id: number; name: string; city: string; logo: string | null }[];
+  groups: { id: number; club_id: number; name: string; member_count: number }[];
+  stats: { athletes: number; groups: number; tournaments: number; titles: number; wins: number };
+}
+
+/** D2 P2: GET /api/groups item — squad with member count (public shape). */
+export interface TrainingGroup {
+  id: number;
+  club_id: number;
+  name: string;
+  level: string;
+  age_min: number | null;
+  age_max: number | null;
+  is_active: boolean;
+  member_count: number;
+}
+
+/** D2 P2: GET /api/groups/{id} — squad + public-shape members. */
+export interface TrainingGroupDetail extends TrainingGroup {
+  members: { id: number; name: string; points: number; wins: number; losses: number }[];
+}
+
 export interface TatamiAssignment {
   id: number;
   name: string;
@@ -266,7 +347,6 @@ export interface Club {
   city: string;
   coach: string;
 }
-
 export interface ClubDetail extends Club {
   athletes: Pick<Athlete, 'id' | 'name' | 'points' | 'wins' | 'losses'>[];
   titles: number;
@@ -274,6 +354,10 @@ export interface ClubDetail extends Club {
   athlete_count: number;
   upcoming_tournaments: ClubTournament[];
   recent_results: ClubResult[];
+  /** Coach 2.0 P2: description, logo URL, owner card (public). */
+  description: string;
+  logo: string | null;
+  owner: { id: number; name: string } | null;
 }
 
 export interface RankingEntry {
@@ -342,6 +426,8 @@ export interface ClubScheduleItem {
   title: string;
   starts_at: string;
   ends_at: string | null;
+  group_id: number | null;
+  group: string | null;
 }
 
 export interface ClubSchedule {
@@ -519,7 +605,9 @@ export type SearchScope = 'athletes' | 'clubs' | 'tournaments';
 export interface TrainingSession {
   id: number;
   club_id: number;
+  group_id: number | null;
   club: string;
+  group: string | null;
   title: string;
   starts_at: string;
   ends_at: string | null;

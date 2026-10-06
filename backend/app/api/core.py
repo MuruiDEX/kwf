@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 import json
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from app.core.db import get_db, escape_like
 from app.core.deps import require_perm, get_current_user, get_optional_user, require_athlete_scope
@@ -148,7 +149,8 @@ def athlete_scoped(aid: int, db: Session = Depends(get_db),
     Explicit allowlist (NOT an alias of any future parent view): public
     fields + birth_year + weight. user_id/created_by are never returned.
     Mirrors _spravki_scope (spravki.py): athletes.manage -> require_athlete_scope,
-    else linked athlete self, else 403.
+    else linked athlete self, else C2 approved guardian (relationship-scoped,
+    read-only), else 403. Branches stay separate: guardian is not coach.
     """
     from app.core.permissions import has_perm, has_role
     a = db.get(Athlete, aid)
@@ -157,7 +159,9 @@ def athlete_scoped(aid: int, db: Session = Depends(get_db),
     if has_perm(db, user, "athletes.manage"):
         require_athlete_scope(aid, db, user)
     elif not (has_role(db, user, "athlete") and a.user_id == user.id):
-        raise HTTPException(403, "Foreign athlete")
+        from app.api.guardian import guardian_athlete_ids
+        if aid not in guardian_athlete_ids(db, user.id):
+            raise HTTPException(403, "Foreign athlete")
     club = db.get(Club, a.club_id) if a.club_id else None
     from app.services.bands import public_bands as _bands
     ag, wc = _bands(db, aid)
@@ -205,11 +209,24 @@ def update_athlete(aid: int, data: AthleteIn, db: Session = Depends(get_db), use
             raise HTTPException(403, "Foreign club")
     for k, v in data.model_dump().items():
         setattr(a, k, v)
+    # D2 P2: the canonical club-change path. Memberships belong to a club's
+    # squads, so a moved/unattached athlete is unlisted from groups outside
+    # the new club (same transaction, no new transfer subsystem).
+    if a.club_id is None:
+        from app.models.training_group import TrainingGroupMember as _M
+        db.query(_M).filter_by(athlete_id=a.id).delete(synchronize_session=False)
+    else:
+        from app.models.training_group import TrainingGroup as _G, TrainingGroupMember as _M
+        foreign = [g.id for g in db.query(_G.id).filter(_G.club_id != a.club_id).all()]
+        if foreign:
+            db.query(_M).filter(_M.athlete_id == a.id,
+                                _M.group_id.in_(foreign)).delete(synchronize_session=False)
     db.commit()
     return {"ok": True, "id": a.id}
 
 @router.get("/api/clubs")
-def list_clubs(q: str = "", mine: bool = False, pg: dict = Depends(page_args),
+def list_clubs(q: str = "", mine: bool = False, city: str = "", country: str = "",
+               pg: dict = Depends(page_args),
                db: Session = Depends(get_db), user: User | None = Depends(get_optional_user)):
     query = db.query(Club).order_by(Club.id.desc())
     if mine:
@@ -219,6 +236,10 @@ def list_clubs(q: str = "", mine: bool = False, pg: dict = Depends(page_args),
     if q:
         like = f"%{escape_like(q)}%"
         query = query.filter(Club.name.ilike(like, escape="\\"))
+    if city:
+        query = query.filter(Club.city.ilike(f"%{escape_like(city)}%", escape="\\"))
+    if country:
+        query = query.filter(Club.country.ilike(f"%{escape_like(country)}%", escape="\\"))
     rows, total = paginate(query, pg["limit"], pg["offset"])
     return envelope([{"id": c.id, "name": c.name, "country": c.country, "city": c.city, "coach": c.coach_name} for c in rows],
              total, pg["limit"], pg["offset"])
@@ -229,6 +250,125 @@ def create_club(data: ClubIn, db: Session = Depends(get_db), user: User = Depend
     db.add(c)
     db.commit()
     return {"id": c.id}
+
+
+class ClubSelfIn(BaseModel):
+    """Restricted coach self-create (Coach 2.0 P2): safe fields only,
+    owner forced to the caller. The clubs.manage path above is untouched."""
+    name: str = Field(min_length=2, max_length=255)
+    country: str = Field(default="", max_length=64)
+    city: str = Field(default="", max_length=128)
+    coach_name: str = Field(default="", max_length=255)
+    description: str = Field(default="", max_length=2000)
+
+
+@router.post("/api/clubs/self")
+def create_own_club(data: ClubSelfIn, db: Session = Depends(get_db),
+                    user: User = Depends(get_current_user)):
+    from app.core.permissions import has_role
+    from app.models.misc import AuditLog
+    if not has_role(db, user, "coach", "organizer", "admin"):
+        raise HTTPException(403, "Only coaches may create their own club")
+    c = Club(name=data.name.strip(), country=data.country.strip(), city=data.city.strip(),
+             coach_name=data.coach_name.strip(), description=data.description.strip()[:2000],
+             owner_id=user.id)
+    db.add(c)
+    db.flush()
+    db.add(AuditLog(actor_id=user.id, action="created club", entity="club", entity_id=c.id))
+    db.commit()
+    db.refresh(c)
+    return {"id": c.id}
+
+
+class ClubPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=255)
+    country: str | None = Field(default=None, max_length=64)
+    city: str | None = Field(default=None, max_length=128)
+    coach_name: str | None = Field(default=None, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+def _club_manager(db: Session, user: User, cid: int):
+    """Owner-or-admin gate for club mutation (404 masks foreign/missing)."""
+    from app.core.permissions import user_roles
+    from app.models.club_athlete import Club as _Club
+    club = db.get(_Club, cid)
+    if not club:
+        raise HTTPException(404, "Not found")
+    if "admin" in user_roles(db, user) or club.owner_id == user.id:
+        return club
+    raise HTTPException(404, "Not found")
+
+
+@router.put("/api/clubs/{cid}")
+def update_club(cid: int, data: ClubPatch, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    """Edit own club (owner/admin). owner_id is never accepted here."""
+    from app.models.misc import AuditLog
+    club = _club_manager(db, user, cid)
+    if data.name is not None:
+        club.name = data.name.strip()
+    if data.country is not None:
+        club.country = data.country.strip()
+    if data.city is not None:
+        club.city = data.city.strip()
+    if data.coach_name is not None:
+        club.coach_name = data.coach_name.strip()
+    if data.description is not None:
+        club.description = data.description.strip()[:2000]
+    db.add(AuditLog(actor_id=user.id, action="updated club", entity="club", entity_id=club.id))
+    db.commit()
+    db.refresh(club)
+    return {"ok": True, "id": club.id}
+
+
+class ClubTransferIn(BaseModel):
+    new_owner_id: int = Field(gt=0)
+
+
+@router.put("/api/clubs/{cid}/transfer")
+def transfer_club(cid: int, data: ClubTransferIn, db: Session = Depends(get_db),
+                  user: User = Depends(get_current_user)):
+    """Transfer club ownership (current owner or admin only).
+
+    The target must hold a managing role (coach/organizer/admin) so the club
+    never lands with someone who cannot manage it. Only owner_id moves —
+    athletes, groups, sessions stay with the club. Audited; old owner loses
+    authority immediately by the same owner_id checks everywhere.
+    """
+    from app.core.permissions import has_role, user_roles
+    from app.models.misc import AuditLog
+    club = _club_manager(db, user, cid)
+    if data.new_owner_id == club.owner_id:
+        return {"ok": True, "id": club.id, "owner_id": club.owner_id}
+    target = db.get(User, data.new_owner_id)
+    if not target or not target.is_active:
+        raise HTTPException(404, "Not found")
+    if not has_role(db, target, "coach", "organizer", "admin"):
+        raise HTTPException(400, "New owner must be a coach, organizer or admin")
+    club.owner_id = target.id
+    db.add(AuditLog(actor_id=user.id, action=f"transferred club to user {target.id}",
+                    entity="club", entity_id=club.id))
+    db.commit()
+    return {"ok": True, "id": club.id, "owner_id": club.owner_id}
+
+
+@router.post("/api/clubs/{cid}/logo")
+async def upload_club_logo(cid: int, file: UploadFile = File(...),
+                           db: Session = Depends(get_db),
+                           user: User = Depends(get_current_user)):
+    """Replace the club logo (owner/admin). Same secure media handling as
+    avatars, separate directory. Audited."""
+    from app.api.coach import save_upload, delete_upload
+    from app.models.misc import AuditLog
+    club = _club_manager(db, user, cid)
+    data = await file.read(2 * 1024 * 1024 + 1)
+    name = save_upload(data, "club_logos")
+    delete_upload("club_logos", club.logo_path)
+    club.logo_path = name
+    db.add(AuditLog(actor_id=user.id, action="updated club logo", entity="club", entity_id=club.id))
+    db.commit()
+    return {"ok": True, "logo": f"/api/media/club-logo/{name}"}
 
 @router.get("/api/clubs/{cid}")
 def club_detail(cid: int, athletes_limit: int = Query(50, ge=1, le=100),
@@ -287,7 +427,11 @@ def club_detail(cid: int, athletes_limit: int = Query(50, ge=1, le=100),
             b += len([x for x in p["bronze_ids"] if x in aids])
         recent.append({"tournament_id": tid, "tournament": name,
                        "date": str(d), "gold": g, "silver": s, "bronze": b})
+    owner = db.get(User, c.owner_id) if c.owner_id else None
     return {"id": c.id, "name": c.name, "country": c.country, "city": c.city, "coach": c.coach_name,
+            "description": c.description,
+            "logo": f"/api/media/club-logo/{c.logo_path}" if c.logo_path else None,
+            "owner": {"id": owner.id, "name": owner.full_name} if owner else None,
             "athletes": [{"id": a.id, "name": a.full_name, "points": a.points, "wins": a.wins, "losses": a.losses} for a in athletes],
             "athlete_count": int(athlete_count), "titles": int(titles),
             "upcoming_tournaments": upcoming, "recent_results": recent}
@@ -300,10 +444,12 @@ def club_schedule(cid: int, from_date: str = Query(default="", alias="from"),
                   db: Session = Depends(get_db)):
     """B2 public club schedule (read-only). Future sessions only
     (starts_at >= from/today), public-safe serializer: id/title/starts_at/
-    ends_at — NEVER note (coach planning PII) or coach_id. ?limit>50 -> 422
+    ends_at plus the group NAME (D2 P3) — NEVER note (coach planning PII),
+    coach_id, or ids beyond the session's own. ?limit>50 -> 422
     via Query validation; unknown club -> 404."""
     from datetime import date as _date
     from sqlalchemy import func
+    from app.models.training_group import TrainingGroup
     c = db.get(Club, cid)
     if not c:
         raise HTTPException(404, "Not found")
@@ -319,9 +465,13 @@ def club_schedule(cid: int, from_date: str = Query(default="", alias="from"),
         func.date(TrainingSession.starts_at) >= start)
     total = base.count()
     rows = base.order_by(TrainingSession.starts_at).offset(offset).limit(limit).all()
+    gmap = {g.id: g for g in db.query(TrainingGroup).filter(
+        TrainingGroup.id.in_([r.group_id for r in rows if r.group_id])).all()} if rows else {}
     return {"items": [{"id": r.id, "title": r.title,
                        "starts_at": str(r.starts_at),
-                       "ends_at": str(r.ends_at) if r.ends_at else None}
+                       "ends_at": str(r.ends_at) if r.ends_at else None,
+                       "group_id": r.group_id,
+                       "group": gmap[r.group_id].name if r.group_id in gmap else None}
                       for r in rows],
             "total": total, "limit": limit, "offset": offset}
 
@@ -504,7 +654,8 @@ def athlete_documents(aid: int, db: Session = Depends(get_db),
     B5: ownership/scope gate (mirrors `_spravki_scope`). Document codes are
     bearer secrets for the public verify/PDF flow, so foreign athletes'
     metadata is never enumerated: athletes.manage -> require_athlete_scope,
-    else linked athlete self, else 404 (no oracle, same as spravki PDF).
+    else linked athlete self, else C2 approved guardian (same non-spravka
+    allowlist), else 404 (no oracle, same as spravki PDF).
     """
     from app.core.permissions import has_perm, has_role
     a = db.get(Athlete, aid)
@@ -514,7 +665,9 @@ def athlete_documents(aid: int, db: Session = Depends(get_db),
         if has_perm(db, user, "athletes.manage"):
             require_athlete_scope(aid, db, user)
         elif not (has_role(db, user, "athlete") and a.user_id == user.id):
-            raise HTTPException(403, "Foreign athlete")
+            from app.api.guardian import guardian_athlete_ids
+            if aid not in guardian_athlete_ids(db, user.id):
+                raise HTTPException(403, "Foreign athlete")
     except HTTPException as e:
         if e.status_code == 403:
             raise HTTPException(404, "Not found")

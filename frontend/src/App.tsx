@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { LangProvider, useLang } from './i18n';
-import { AuthProvider, RequireRole, Toasts } from './auth';
+import { AuthProvider, RequireRole, Toasts, useAuth } from './auth';
 import { Header } from './components/ui/Header';
 import { CommandMenu } from './components/ui/CommandMenu';
 import { Home } from './pages/Home';
@@ -16,10 +16,21 @@ import { Cabinet } from './pages/Cabinet';
 import { Admin, UsersDirectory } from './pages/Admin';
 import { Verify, News, NewsDetail, NewsEditor } from './pages/Documents';
 import { Notifications } from './pages/Notifications';
+import { CoachDirectory } from './pages/CoachDirectory';
+import { CoachProfile } from './pages/CoachProfile';
 
 const qc = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1, refetchOnWindowFocus: false } },
 });
+
+function FooterOrgLinks() {
+  // Organizer creation entry is permission-gated: coaches/athletes/public
+  // never see it (backend POST /api/tournaments enforces the same rule).
+  const { t } = useLang();
+  const { can } = useAuth();
+  if (!can('tournaments.create')) return null;
+  return <Link to="/organizer">{t('org.create')}</Link>;
+}
 
 function Footer() {
   const { t } = useLang();
@@ -41,7 +52,7 @@ function Footer() {
         </nav>
         <nav aria-label={t('foot.org')}>
           <div className="font-extrabold text-xs uppercase tracking-[.12em] mb-3" style={{ color: 'var(--muted)' }}>{t('foot.org')}</div>
-          <div className="flex flex-col gap-2"><Link to="/organizer">{t('org.create')}</Link><Link to="/referee">{t('cmdk.referee')}</Link><Link to="/me">{t('nav.cabinet')}</Link></div>
+          <div className="flex flex-col gap-2"><FooterOrgLinks /><Link to="/referee">{t('cmdk.referee')}</Link><Link to="/me">{t('nav.cabinet')}</Link></div>
         </nav>
       </div>
       <div className="border-t" style={{ borderColor: 'var(--border)' }}>
@@ -88,6 +99,8 @@ export default function App() {
               <Route path="/rankings" element={<Rankings />} />
               <Route path="/clubs" element={<Clubs />} />
               <Route path="/clubs/:id" element={<ClubDetail />} />
+              <Route path="/coaches" element={<CoachDirectory />} />
+              <Route path="/coaches/:id" element={<CoachProfile />} />
               <Route path="/live" element={<LiveAll />} />
               <Route path="/tv/:id" element={<TvBoard />} />
               <Route path="/referee" element={<RequireRole roles={['referee', 'organizer']}><Referee /></RequireRole>} />

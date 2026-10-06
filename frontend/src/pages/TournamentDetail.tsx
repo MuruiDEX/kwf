@@ -8,7 +8,8 @@ import { api, pageItems, useLiveSSE, errMsg } from '../lib/api';
 import { Badge, EmptyState, Skeleton } from '../components/ui/core';
 import { ExportBar, Results } from './Documents';
 import { STATUS_TONE, FLOW } from '../components/ui/tournament';
-import { useTournament, useRegs, useBrackets, useValidation, useGenBrackets, useGenSchedule, useStatusChange, useCheckin, useWeighIn, useMoveReg, useLiveState, useTatamis, useReferees, useAssignReferee, useUpdateTournament, useCreateCategory, useUpdateCategory, useRegStatus, useBulkRegStatus, useMyAthleteProfile, useMyRegistrations, useCorrectMatch } from '../lib/queries';
+import { useTournament, useRegs, useBrackets, useValidation, useGenBrackets, useGenSchedule, useStatusChange, useCheckin, useWeighIn, useMoveReg, useLiveState, useTatamis, useReferees, useAssignReferee, useUpdateTournament, useCreateCategory, useUpdateCategory, useRegStatus, useBulkRegStatus, useMyAthleteProfile, useMyRegistrations, useCorrectMatch, useGuardianRegs, useScopedAthlete } from '../lib/queries';
+import { MyParticipation } from './MyParticipation';
 import type { Bracket, BracketMatch, Category, LiveEvent, MyAthlete, Registration, TournamentDetail as TournamentDetailT, TournamentStatus, ValidationItem } from '../types/api';
 
 interface ImportSummary {
@@ -30,7 +31,19 @@ export function TournamentDetail() {
     upcoming: t('d.flow1'), registration: t('d.flow2'), live: t('d.flow3'), finished: t('d.flow4'),
   };
   const { id } = useParams();
-  const { can } = useAuth();
+  const { can, user, hasRole } = useAuth();
+  const isAthleteViewer = !!user && hasRole('athlete');
+  const { data: viewerAthlete } = useMyAthleteProfile(isAthleteViewer);
+  const { data: viewerRegs } = useMyRegistrations(isAthleteViewer);
+  const viewerReg = (viewerRegs ?? []).find((r) => String(r.tournament_id) === String(id ?? ''));
+  // Guardian 2.0: approved ward with a registration here renders the same
+  // participation card (backend re-authorizes every read; 404 stays hidden).
+  const { data: wardRegs } = useGuardianRegs(null, !!user && !viewerAthlete);
+  const guardianReg = !viewerReg
+    ? (wardRegs ?? []).find((r) => String(r.tournament_id) === String(id ?? ''))
+    : undefined;
+  const { data: wardScoped } = useScopedAthlete(
+    guardianReg ? String(guardianReg.athlete_id) : undefined, !!guardianReg);
   // P1: UI hint only (backend enforces). Use permissions, not raw role==,
   // so granted users (e.g. coach with tournaments.manage) see the buttons
   // and foreign organizers don't get a misleading affordance (they'd 403).
@@ -109,6 +122,12 @@ export function TournamentDetail() {
       <div className="tabs" role="tablist" aria-label={tt.name}>
         {TABS.map(x => <button key={x} role="tab" className="tab" aria-selected={tab === x} onClick={() => setTab(x)}>{TAB_RU[x]}</button>)}
       </div>
+      {viewerAthlete && viewerReg && id && (
+        <MyParticipation tid={id} tt={tt} me={viewerAthlete} reg={viewerReg} />
+      )}
+      {!viewerReg && guardianReg && wardScoped && id && (
+        <MyParticipation tid={id} tt={tt} me={wardScoped} reg={guardianReg} />
+      )}
       {tab === 'overview' && (
         <div className="space-y-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -783,8 +802,8 @@ function ApplyCard({ tid, categories }: { tid: string; categories: Category[] })
   // Wave 5: registration closes with the stage (server 409s in live/finished).
   const closed = tt?.status === 'live' || tt?.status === 'finished';
   const isAthlete = hasRole('athlete');
-  const { data: me } = useMyAthleteProfile(!!user && isAthlete);
-  const { data: mine, refetch: refetchMine } = useMyRegistrations(!!user && isAthlete);
+  const { data: me, isLoading: meLoading } = useMyAthleteProfile(!!user && isAthlete);
+  const { data: mine, refetch: refetchMine, isLoading: regsLoading } = useMyRegistrations(!!user && isAthlete);
   const withdraw = useRegStatus(tid);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [msg, setMsg] = useState('');
@@ -820,9 +839,10 @@ function ApplyCard({ tid, categories }: { tid: string; categories: Category[] })
       {closed && <div className="text-sm" style={{ color: 'var(--muted)' }}>{t('self.closed')}</div>}
       {!user && <div className="text-sm" style={{ color: 'var(--muted)' }}>{t('self.loginHint')}</div>}
       {user && !isAthlete && <div className="text-sm" style={{ color: 'var(--muted)' }}>{t('self.athletesOnly')}</div>}
-      {user && isAthlete && !me && (
+      {user && isAthlete && !me && !meLoading && (
         <div className="text-sm" style={{ color: 'var(--muted)' }}>{t('self.claimHint')}</div>
       )}
+      {user && isAthlete && (meLoading || regsLoading) && <Skeleton className="h-16" />}
       {categories.map((c) => {
         const fit = fitOf(me ?? null, c);
         const reg = myRegs.find((r) => r.category_id === c.id);

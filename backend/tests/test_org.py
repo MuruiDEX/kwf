@@ -48,3 +48,16 @@ def test_reject_flow_and_kk_message():
     # Kazakh error message via Accept-Language
     r = client.post("/api/auth/login", json={"email": "nobody@x.org", "password": "wrong"}, headers={"Accept-Language": "kk"})
     assert r.status_code == 401 and "құпия сөз" in r.json()["detail"]
+
+
+def test_tournament_create_matrix():
+    """POST /api/tournaments: organizer/admin allowed; coach/athlete/referee/
+    public denied; anonymous 401. Backend authority behind the hidden UI."""
+    admin = admin_headers()
+    body = {"name": "Matrix Cup", "start_date": "2026-12-01"}
+    assert client.post("/api/tournaments", json=body, headers=admin).status_code == 200
+    assert client.post("/api/tournaments", json=body, headers=auth_headers("organizer")).status_code == 200
+    for role in ("coach", "athlete", "referee", "public"):
+        assert client.post("/api/tournaments", json=body, headers=auth_headers(role)).status_code == 403, role
+    client.cookies.clear()
+    assert client.post("/api/tournaments", json=body).status_code == 401

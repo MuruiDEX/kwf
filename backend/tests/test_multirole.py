@@ -102,7 +102,13 @@ def test_schedule_scoping():
     me = s.query(User).filter_by(email="mrsched@kwf.org").first()
     club = Club(name="Sched Club", country="KZ", city="A", coach_name="C", owner_id=me.id)
     s.add(club)
-    other = Club(name="Other Club", country="KZ", city="B", coach_name="X", owner_id=999999)
+    # C5: FKs are enforced on sqlite now (prod parity) — the foreign club
+    # needs a real owner row, not a dangling id (which postgres always rejected).
+    other_owner = User(email="mrschedother@kwf.org", password_hash="x",
+                       full_name="o", role="coach")
+    s.add(other_owner)
+    s.flush()
+    other = Club(name="Other Club", country="KZ", city="B", coach_name="X", owner_id=other_owner.id)
     s.add(other)
     s.commit()
     cid, ocid = club.id, other.id

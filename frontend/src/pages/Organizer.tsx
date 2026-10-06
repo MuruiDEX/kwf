@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useLang } from '../i18n';
 import { api, errMsg, pageItems } from '../lib/api';
 import { useAudit } from '../lib/queries';
-import type { AuditItem } from '../types/api';
+import type { AuditItem, Tournament } from '../types/api';
 import { useAuth } from '../auth';
 import { DataTable, Skeleton } from '../components/ui/core';
 import { LoginForm, RegisterForm, OrgRequestForm } from './AuthForms';
@@ -82,6 +82,50 @@ export function Organizer() {
       </div>
       <AuditLog />
     </div>
+  );
+}
+
+// Organizer dashboard block (Cabinet organizer view): CTA + own tournaments
+// with statuses + quick links. Composes already-loaded tournament data only.
+export function OrganizerDashboard({ mine }: { mine: Tournament[] }) {
+  const { t } = useLang();
+  const upcoming = mine.filter((x) => x.status === 'upcoming' || x.status === 'registration');
+  const live = mine.filter((x) => x.status === 'live');
+  return (
+    <section className="space-y-3" aria-label={t('org.dash')}>
+      <h2 className="font-bold">{t('org.dash')}</h2>
+      <div className="grid sm:grid-cols-2 gap-3">
+        <Link to="/organizer" className="card card-hover p-4 flex items-center gap-3 min-w-0">
+          <span className="grid place-items-center w-10 h-10 rounded-xl flex-none" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
+            <span className="font-black text-lg">+</span>
+          </span>
+          <span className="min-w-0">
+            <span className="block font-extrabold text-sm leading-tight">{t('me.newT')}</span>
+            <span className="block text-xs truncate" style={{ color: 'var(--muted)' }}>{t('org.title')}</span>
+          </span>
+        </Link>
+        <div className="card p-4">
+          <div className="display text-[26px] font-semibold">{mine.length}</div>
+          <div className="text-xs font-semibold" style={{ color: 'var(--muted)' }}>{t('org.total')}</div>
+          {!!live.length && (
+            <div className="text-xs mt-1 font-bold" style={{ color: 'var(--live)' }}>
+              {t('status.live')}: {live.length}
+            </div>
+          )}
+        </div>
+      </div>
+      {!!upcoming.length && (
+        <div className="card p-5 space-y-2">
+          <div className="font-extrabold text-sm">{t('org.upcoming')}</div>
+          {upcoming.slice(0, 5).map((x) => (
+            <Link key={x.id} to={`/tournaments/${x.id}`} className="flex items-center gap-2 text-sm font-semibold py-1">
+              <span className="truncate">{x.name}</span>
+              <span className="ml-auto text-xs font-bold" style={{ color: 'var(--muted)' }}>{t(`status.${x.status}`)}</span>
+            </Link>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 

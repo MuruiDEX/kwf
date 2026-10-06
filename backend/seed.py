@@ -62,6 +62,18 @@ if not org:
     db.commit()
 _ensure_role_row(db, org, "organizer")
 
+# Dev/test-only organizer fixture for manual organizer-workflow testing.
+# Never created in prod (unlike the legacy demo accounts above, this one is
+# explicitly a local testing convenience, not seeded content).
+if _ENV not in ("prod", "production", "staging"):
+    test_org = db.query(User).filter_by(email="organizer@test.local").first()
+    if not test_org:
+        test_org = User(email="organizer@test.local", password_hash=hash_password("organizer123"),
+                        full_name="Test Organizer", role="organizer")
+        db.add(test_org)
+        db.commit()
+    _ensure_role_row(db, test_org, "organizer")
+
 admin = db.query(User).filter_by(email=SEED_ADMIN_EMAIL).first()
 if not admin:
     from app.models.misc import AuditLog

@@ -1,9 +1,10 @@
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { Bell, Menu, Moon, Sun, Search, Trophy, User, ShieldCheck } from 'lucide-react';
+import { Bell, Menu, Moon, Sun, Search, Trophy, User, ShieldCheck, LogOut } from 'lucide-react';
 import { useLang, LangToggle } from '../../i18n';
 import { api } from '../../lib/api';
 import { useAuth } from '../../auth';
+import { ProfileAvatar } from '../../pages/ProfileEdit';
 import type { KwfNotification, NotesResponse } from '../../types/api';
 
 export function Header({ onCmdk }: { onCmdk: () => void }) {
@@ -11,6 +12,7 @@ export function Header({ onCmdk }: { onCmdk: () => void }) {
   const NAV: [string, string][] = [
     ['/tournaments', t('nav.tournaments')], ['/athletes', t('nav.athletes')], ['/rankings', t('nav.rankings')],
     ['/live', t('nav.live')], ['/news', t('nav.news')], ['/clubs', t('nav.clubs')],
+    ['/coaches', t('nav.coaches')],
   ];
   // Wave A2: persist theme in localStorage (was toggle-only, reset on reload).
   const [dark, setDark] = useState(() => {
@@ -25,7 +27,14 @@ export function Header({ onCmdk }: { onCmdk: () => void }) {
   const [showNotes, setShowNotes] = useState(false);
   const [menu, setMenu] = useState(false);
   const nav = useNavigate();
-  const { user, can } = useAuth();
+  const { user, can, hasRole, logout } = useAuth();
+  const [showUser, setShowUser] = useState(false);
+  const home = user && hasRole('coach') ? '/coach' : '/me';
+  const out = async () => {
+    setShowUser(false);
+    await logout();
+    nav('/me', { replace: true });
+  };
   // P1: admin icon via permission (admin holds all perms), so users granted
   // roles.manage-equivalent visibility aren't hidden by a raw role check.
   const isAdmin = can('roles.manage');
@@ -43,13 +52,13 @@ export function Header({ onCmdk }: { onCmdk: () => void }) {
     return () => clearInterval(t);
   }, [user?.id]);
   useEffect(() => {
-    if (!menu && !showNotes) return;
+    if (!menu && !showNotes && !showUser) return;
     const h = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setMenu(false); setShowNotes(false); }
+      if (e.key === 'Escape') { setMenu(false); setShowNotes(false); setShowUser(false); }
     };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
-  }, [menu, showNotes]);
+  }, [menu, showNotes, showUser]);
   const link = ({ isActive }: { isActive: boolean }) => ({
     color: isActive ? 'var(--accent)' : 'var(--text)', fontWeight: 700, fontSize: 13.5,
     borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent', paddingBottom: 4,
@@ -97,9 +106,35 @@ export function Header({ onCmdk }: { onCmdk: () => void }) {
             </div>
           )}
           <button onClick={toggle} className="card p-2 hidden sm:block" aria-label={t('nav.theme')}>{dark ? <Sun size={18} /> : <Moon size={18} />}</button>
-          <Link to="/me" className="card p-2" aria-label={t('nav.cabinet')} title={t('nav.cabinet')}>
-            <User size={18} />
-          </Link>
+          {user ? (
+            <div className="relative">
+              <button onClick={() => setShowUser((v) => !v)} className="card p-1 pr-2 flex items-center gap-2"
+                      aria-label={t('me.profile')} aria-expanded={showUser}>
+                <ProfileAvatar name={user.full_name || user.email} size={28} />
+                <span className="hidden md:block text-[13px] font-bold max-w-[120px] truncate">
+                  {user.full_name || user.email}
+                </span>
+              </button>
+              {showUser && (
+                <div className="card absolute right-0 top-12 w-56 p-3 z-30 text-sm shadow-xl" style={{ background: 'var(--bg)' }} role="menu" aria-label={t('me.profile')}>
+                  <div className="px-1 pb-2 border-b" style={{ borderColor: 'var(--border)' }}>
+                    <div className="font-extrabold truncate">{user.full_name || '—'}</div>
+                    <div className="text-xs truncate" style={{ color: 'var(--muted)' }}>{user.email}</div>
+                    <div className="text-xs font-bold mt-0.5" style={{ color: 'var(--accent)' }}>{t(`role.${user.role}`)}</div>
+                  </div>
+                  <Link to="/me" onClick={() => setShowUser(false)} className="block py-2 font-bold text-sm">{t('me.profile')}</Link>
+                  <Link to={home} onClick={() => setShowUser(false)} className="block py-2 font-bold text-sm">{t('nav.cabinet')}</Link>
+                  <button onClick={out} className="flex items-center gap-2 py-2 font-bold text-sm w-full text-left">
+                    <LogOut size={15} /> {t('me.out')}
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <Link to="/me" className="card p-2" aria-label={t('nav.cabinet')} title={t('nav.cabinet')}>
+              <User size={18} />
+            </Link>
+          )}
           {isAdmin && (
             <Link to="/admin" className="card p-2" aria-label={t('adm.title')} title={t('adm.title')}>
               <ShieldCheck size={18} />

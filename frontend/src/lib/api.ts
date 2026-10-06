@@ -37,7 +37,8 @@ export async function api<T = unknown>(path: string, opts: ApiOpts = {}): Promis
       credentials: 'include',
       ...rest,
       signal: ctrl.signal,
-      headers: { 'Content-Type': 'application/json', 'Accept-Language': getLang(), ...(headers ?? {}) },
+      // FormData sets its own multipart boundary — never force JSON there.
+      headers: { ...(rest.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }), 'Accept-Language': getLang(), ...(headers ?? {}) },
     });
   } catch (e: unknown) {
     clearTimeout(timer);

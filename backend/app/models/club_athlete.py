@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
-from sqlalchemy import String, Integer, Float, ForeignKey, DateTime, func
+from sqlalchemy import String, Integer, Float, ForeignKey, DateTime, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.db import Base
 
@@ -11,6 +11,8 @@ class Club(Base):
     country: Mapped[str] = mapped_column(String(64), default="", index=True)
     city: Mapped[str] = mapped_column(String(128), default="")
     coach_name: Mapped[str] = mapped_column(String(255), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    logo_path: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
     owner_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     athletes: Mapped[list["Athlete"]] = relationship(back_populates="club")
@@ -46,10 +48,17 @@ class TrainingSession(Base):
 
     Scoped by club ownership (club.owner_id), not by role string — so a
     coach+organizer keeps full trainer functionality either way.
+
+    D2 P3: optional link to one of the club's training groups (NULL =
+    club-wide session). SET NULL so archiving/deleting a group never deletes
+    planned sessions.
     """
     __tablename__ = "training_sessions"
     id: Mapped[int] = mapped_column(primary_key=True)
     club_id: Mapped[int] = mapped_column(ForeignKey("clubs.id", ondelete="CASCADE"), index=True)
+    group_id: Mapped[int | None] = mapped_column(
+        ForeignKey("training_groups.id", ondelete="SET NULL"),
+        nullable=True, default=None, index=True)
     coach_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255), default="")
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)

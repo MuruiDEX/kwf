@@ -3,11 +3,12 @@
  */
 import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query';
 import { api } from './api';
+import type { AthleteCreateBody } from './athletes';
 import type {
   AdminUser, AdminUserDetail, Athlete, AthleteDoc, AthleteProfile, AuditItem, Bracket, BracketMatch, Category, Club, ClubDetail, ClubSchedule, ScopedAthlete,
   DocVerify, IssuedDoc, LiveState, MyAssignment, MyAthlete, MyRegistration, NewsDetail, NewsItem, NotesResponse,
   OrganizerRequest, Paged, PermissionMeta, Podium, RankingEntry, RefereeOption, Registration, RegStatus, ReportResponse, ResultsResponse,
-  SpravkaTemplate, TatamiAssignment, Tournament, TournamentDetail, TournamentStatus, TrainingSession, ValidationItem,
+  SpravkaTemplate, TatamiAssignment, Tournament, TournamentDetail, TournamentStatus, TrainingGroup, TrainingGroupDetail, TrainingSession, ValidationItem, Ward, WardRegistration, GuardianLinks, MyProfile, CoachDirectoryItem, CoachPublicProfile,
 } from '../types/api';
 export const qk = {
   me: ['me'],
@@ -45,6 +46,20 @@ export const qk = {
   verify: (submitted: string, nonce: number) => ['verify', submitted, nonce] as const,
   results: (tid: string | number) => ['results', String(tid)] as const,
   report: (tid: string | number, lang: string) => ['report', String(tid), lang] as const,
+  guardianWards: ['guardian-wards'] as const,
+  guardianRegs: (id: number | 'all') => ['guardian-regs', id] as const,
+  guardianLinks: ['guardian-links'] as const,
+  trainingGroups: (clubId: number | 'all', incl = false) =>
+    (incl ? (['training-groups', clubId, 'incl'] as const) : (['training-groups', clubId] as const)),
+  trainingGroup: (id: number | string) => ['training-group', String(id)] as const,
+  athleteGroups: (id: number | string) => ['athlete-groups', String(id)] as const,
+  myGroups: ['my-groups'] as const,
+  coaches: (q = '', city = '', country = '') =>
+    (q || city || country ? (['coaches', q, city, country] as const) : (['coaches'] as const)),
+  coach: (id: number | string) => ['coach', String(id)] as const,
+  sessions: (clubId: number | 'all', groupId: number | 'all' = 'all') =>
+    (['sessions', clubId, groupId] as const),
+  myProfile: ['my-profile'] as const,
 };
 
 type Opt<T> = Omit<UseQueryOptions<T>, 'queryKey' | 'queryFn'>;
@@ -120,8 +135,8 @@ export function useReport(tid: string, lang: string) {
 }
 
 // ---------- people ----------
-export function useAthletes(q: string) {
-  return useQuery<Paged<Athlete>>({ queryKey: qk.athletes(q), queryFn: () => api(`/api/athletes?q=${encodeURIComponent(q)}`) });
+export function useAthletes(q: string, enabled = true) {
+  return useQuery<Paged<Athlete>>({ queryKey: qk.athletes(q), queryFn: () => api(`/api/athletes?q=${encodeURIComponent(q)}`), enabled });
 }
 export function useMyAthletes(enabled = true) {
   return useQuery<Paged<Athlete>>({ queryKey: ['my-athletes'], queryFn: () => api('/api/athletes?mine=true'), enabled });
@@ -144,8 +159,17 @@ export function useAthleteDocs(id: string | undefined, enabled = true) {
 export function useRankings(qs = '') {
   return useQuery<Paged<RankingEntry>>({ queryKey: qk.rankings(qs), queryFn: () => api(`/api/rankings?${qs}`) });
 }
-export function useClubs() {
-  return useQuery<Paged<Club>>({ queryKey: qk.clubs, queryFn: () => api('/api/clubs') });
+export function useClubs(q = '', city = '', country = '') {
+  // Coach 2.0 P3: filters append key segments ONLY when set (legacy key stays byte-identical).
+  const key = q || city || country
+    ? (['clubs', q, city, country] as const)
+    : qk.clubs;
+  const p = new URLSearchParams();
+  if (q) p.set('q', q);
+  if (city) p.set('city', city);
+  if (country) p.set('country', country);
+  const qs = p.toString();
+  return useQuery<Paged<Club>>({ queryKey: key, queryFn: () => api(`/api/clubs${qs ? `?${qs}` : ''}`) });
 }
 export function useClub(id: string | undefined, athletesLimit = 50) {
   const capped = Math.max(1, Math.min(athletesLimit, 100));
@@ -291,28 +315,155 @@ export function useBulkRegStatus(tid: string) {
     },
   });
 }
+// ---------- D2 P1: athlete creation (coach cabinet; scope enforced server-side) ----------
+export function useCreateAthlete() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: AthleteCreateBody) =>
+      api<{ id: number }>('/api/athletes', { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: (_r, body) => {
+      qc.invalidateQueries({ queryKey: ['my-athletes'] });
+      qc.invalidateQueries({ queryKey: ['athletes'] });
+      qc.invalidateQueries({ queryKey: ['rankings'] });
+      if (body.club_id != null) qc.invalidateQueries({ queryKey: qk.club(body.club_id) });
+    },
+  });
+}
+// ---------- D2 P2: training groups (coach squads; manage = club owner) ----------
+export function useClubGroups(clubId: number | null, enabled = true, includeInactive = false) {
+  const qs = clubId != null
+    ? `/api/groups?club_id=${clubId}${includeInactive ? '&include_inactive=true' : ''}`
+    : '/api/groups';
+  return useQuery<TrainingGroup[]>({
+    queryKey: qk.trainingGroups(clubId ?? 'all', includeInactive),
+    queryFn: () => api(qs),
+    retry: false, enabled,
+  });
+}
+export function useGroup(gid: number | null, enabled = true) {
+  return useQuery<TrainingGroupDetail>({
+    queryKey: qk.trainingGroup(gid ?? ''), queryFn: () => api(`/api/groups/${gid}`),
+    retry: false, enabled: gid != null && enabled,
+  });
+}
+/** Athlete P1: squads containing one athlete (public roster shape). */
+export function useAthleteGroups(athleteId: number | null, enabled = true) {
+  return useQuery<TrainingGroup[]>({
+    queryKey: qk.athleteGroups(athleteId ?? ''), queryFn: () => api(`/api/groups?athlete_id=${athleteId}`),
+    retry: false, enabled: athleteId != null && enabled,
+  });
+}
+function invalidateGroups(qc: ReturnType<typeof useQueryClient>, clubId?: number | null, gid?: number | null) {
+  qc.invalidateQueries({ queryKey: ['training-groups'] });
+  if (gid != null) qc.invalidateQueries({ queryKey: qk.trainingGroup(gid) });
+  if (clubId != null) qc.invalidateQueries({ queryKey: qk.club(clubId) });
+}
+export function useCreateGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api<TrainingGroup>('/api/groups', { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: (g) => invalidateGroups(qc, g.club_id),
+  });
+}
+export function useUpdateGroup(gid: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Record<string, unknown>) =>
+      api<TrainingGroup>(`/api/groups/${gid}`, { method: 'PUT', body: JSON.stringify(patch) }),
+    onSuccess: (g) => invalidateGroups(qc, g.club_id, gid),
+  });
+}
+export function useGroupMember(gid: number) {
+  const qc = useQueryClient();
+  const add = useMutation({
+    mutationFn: (athlete_id: number) =>
+      api<unknown>(`/api/groups/${gid}/members`, { method: 'POST', body: JSON.stringify({ athlete_id }) }),
+    onSuccess: () => invalidateGroups(qc, undefined, gid),
+  });
+  const remove = useMutation({
+    mutationFn: (athlete_id: number) =>
+      api<unknown>(`/api/groups/${gid}/members/${athlete_id}`, { method: 'DELETE' }),
+    onSuccess: () => invalidateGroups(qc, undefined, gid),
+  });
+  return { add, remove };
+}
+// ---------- C3: guardian cabinet (approved wards, read-only) ----------
+// Visibility is data-driven (no guardian role exists): an empty list means
+// "not a guardian", never a role check. retry:false like other protected
+// queries so 403/404 surfaces as error state instead of retry storms.
+export function useGuardianWards(enabled = true) {
+  // C5: authorization-sensitive — never serve a stale ward list across
+  // remounts (a revoked ward must revalidate, not render from cache).
+  return useQuery<Ward[]>({ queryKey: qk.guardianWards, queryFn: () => api('/api/guardian/athletes'), retry: false, enabled, staleTime: 0 });
+}
+export function useGuardianRegs(athleteId: number | null, enabled = true) {
+  const key = athleteId ?? 'all';
+  const qs = athleteId != null ? `?athlete_id=${athleteId}` : '';
+  // C5: same as above — revoked wards must fail the refetch, not read cache.
+  return useQuery<WardRegistration[]>({ queryKey: qk.guardianRegs(key), queryFn: () => api(`/api/guardian/registrations${qs}`), retry: false, enabled, staleTime: 0 });
+}
+/** Guardian 2.0: own outgoing + actionable incoming links (lifecycle UI). */
+export function useGuardianLinks(enabled = true) {
+  return useQuery<GuardianLinks>({ queryKey: qk.guardianLinks, queryFn: () => api('/api/guardian/links'), retry: false, enabled, staleTime: 0 });
+}
+export function useGuardianLinkAction() {
+  const qc = useQueryClient();
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: qk.guardianLinks });
+    qc.invalidateQueries({ queryKey: qk.guardianWards });
+    qc.invalidateQueries({ queryKey: ['guardian-regs'] });
+  };
+  return useMutation({
+    mutationFn: ({ lid, action }: { lid: number; action: 'approve' | 'reject' }) =>
+      api<unknown>(`/api/guardian/links/${lid}/${action}`, { method: 'POST' }),
+    onSuccess: refresh,
+  });
+}
+export function useGuardianRevoke() {
+  const qc = useQueryClient();
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: qk.guardianLinks });
+    qc.invalidateQueries({ queryKey: qk.guardianWards });
+    qc.invalidateQueries({ queryKey: ['guardian-regs'] });
+  };
+  return useMutation({
+    mutationFn: (lid: number) => api<unknown>(`/api/guardian/links/${lid}`, { method: 'DELETE' }),
+    onSuccess: refresh,
+  });
+}
 // ---------- multi-role: coach training schedule ----------
-export function useSessions(clubId: number | null, enabled = true) {
-  const qs = clubId != null ? `?club_id=${clubId}` : '';
-  return useQuery<Paged<TrainingSession>>({ queryKey: ['sessions', clubId ?? 0], queryFn: () => api(`/api/schedule${qs}`), retry: false, enabled });
+
+export function useSessions(clubId: number | null, enabled = true, groupId: number | null = null) {
+  const qs = clubId != null
+    ? `?club_id=${clubId}${groupId != null ? `&group_id=${groupId}` : ''}`
+    : '';
+  return useQuery<Paged<TrainingSession>>({ queryKey: qk.sessions(clubId ?? 'all', groupId ?? 'all'), queryFn: () => api(`/api/schedule${qs}`), retry: false, enabled });
 }
 export function useSaveSession() {
   const qc = useQueryClient();
-  const refresh = () => qc.invalidateQueries({ queryKey: ['sessions'] });
+  const refresh = (body?: Record<string, unknown>) => {
+    qc.invalidateQueries({ queryKey: ['sessions'] });
+    const gid = body?.group_id;
+    if (typeof gid === 'number') qc.invalidateQueries({ queryKey: qk.trainingGroup(gid) });
+  };
   return useMutation({
     mutationFn: ({ id, body }: { id: number | null; body: Record<string, unknown> }) =>
       api<{ id: number }>(id == null ? '/api/schedule' : `/api/schedule/${id}`,
         id == null
           ? { method: 'POST', body: JSON.stringify(body) }
           : { method: 'PUT', body: JSON.stringify(body) }),
-    onSuccess: refresh,
+    onSuccess: (_r, vars) => refresh(vars.body),
   });
 }
 export function useDeleteSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => api<{ ok: boolean }>(`/api/schedule/${id}`, { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['sessions'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['sessions'] });
+      qc.invalidateQueries({ queryKey: ['training-group'] });
+    },
   });
 }
 // ---------- Wave 6: controlled bracket correction ----------
@@ -399,3 +550,102 @@ export function useMoveReg(tid: string) {
 }
 
 export type { Category };
+// ---------- Coach 2.0 P3: public directory + profile (allowlisted reads) ----------
+export function useCoaches(q = '', city = '', country = '', enabled = true) {
+  const p = new URLSearchParams();
+  if (q) p.set('q', q);
+  if (city) p.set('city', city);
+  if (country) p.set('country', country);
+  const qs = p.toString();
+  return useQuery<Paged<CoachDirectoryItem>>({
+    queryKey: qk.coaches(q, city, country),
+    queryFn: () => api(`/api/coaches${qs ? `?${qs}` : ''}`), retry: false, enabled,
+  });
+}
+export function useCoachProfile(id: string | undefined) {
+  return useQuery<CoachPublicProfile>({
+    queryKey: qk.coach(id ?? ''), queryFn: () => api(`/api/coaches/${id}`),
+    retry: false, enabled: !!id,
+  });
+}
+export function useMyGroups(enabled = true) {
+  return useQuery<TrainingGroup[]>({
+    queryKey: qk.myGroups, queryFn: () => api('/api/groups/mine'), retry: false, enabled,
+  });
+}
+// ---------- Coach 2.0 P1: self profile + avatar ----------
+export function useMyProfile(enabled = true) {
+  return useQuery<MyProfile>({ queryKey: qk.myProfile, queryFn: () => api('/api/auth/profile'), retry: false, enabled });
+}
+export function useUpdateProfile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api<MyProfile>('/api/auth/profile', { method: 'PUT', body: JSON.stringify(body) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.myProfile });
+      qc.invalidateQueries({ queryKey: qk.me });
+    },
+  });
+}
+export function useAvatar() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      return api<{ ok: boolean; avatar: string }>('/api/auth/avatar', { method: 'POST', body: fd });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.myProfile });
+    },
+  });
+}
+// ---------- Coach 2.0 P2: club self-create + management ----------
+export function useCreateOwnClub() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      api<{ id: number }>('/api/clubs/self', { method: 'POST', body: JSON.stringify(body) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['my-clubs'] });
+      qc.invalidateQueries({ queryKey: qk.clubs });
+    },
+  });
+}
+export function useUpdateClub(cid: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Record<string, unknown>) =>
+      api<{ ok: boolean }>(`/api/clubs/${cid}`, { method: 'PUT', body: JSON.stringify(patch) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.club(cid) });
+      qc.invalidateQueries({ queryKey: ['my-clubs'] });
+      qc.invalidateQueries({ queryKey: qk.clubs });
+    },
+  });
+}
+export function useTransferClub(cid: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (new_owner_id: number) =>
+      api<{ ok: boolean }>(`/api/clubs/${cid}/transfer`, { method: 'PUT', body: JSON.stringify({ new_owner_id }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.club(cid) });
+      qc.invalidateQueries({ queryKey: ['my-clubs'] });
+    },
+  });
+}
+export function useClubLogo(cid: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      return api<{ ok: boolean; logo: string }>(`/api/clubs/${cid}/logo`, { method: 'POST', body: fd });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.club(cid) });
+    },
+  });
+}

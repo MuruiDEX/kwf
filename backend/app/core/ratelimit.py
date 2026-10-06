@@ -12,6 +12,7 @@ from starlette.responses import JSONResponse
 RULES: list[tuple[str, int, int]] = [
     ("/api/auth/login", 10, 60),
     ("/api/auth/register", 10, 60),
+    ("/api/auth/avatar", 30, 60),
     ("/api/documents/verify", 30, 60),
     ("/api/tournaments/matches/", 120, 60),
     ("/api/tournaments", 120, 60),

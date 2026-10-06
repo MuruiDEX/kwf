@@ -4,7 +4,7 @@ from alembic import context
 from app.core.config import settings
 from app.core.db import Base
 import app.models.user, app.models.club_athlete, app.models.tournament  # noqa: F401
-import app.models.competition, app.models.misc  # noqa: F401
+import app.models.competition, app.models.misc, app.models.guardian, app.models.training_group, app.models.coach_profile  # noqa: F401
 
 config = context.config
 # An explicitly provided URL (tests, ops overrides) wins over settings.

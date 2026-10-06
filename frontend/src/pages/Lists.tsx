@@ -5,8 +5,11 @@ import { useLang } from '../i18n';
 import { api, errMsg, pageItems } from '../lib/api';
 import { useAuth, notify } from '../auth';
 import { DataTable, Skeleton, Badge, QueryState, EmptyState } from '../components/ui/core';
-import { useAthletes, useAthlete, useScopedAthlete, useAthleteDocs, useMyAthleteProfile, useClaimAthlete, useRankings, useClubs, useClub, useClubSchedule, useTournamentsLive } from '../lib/queries';
-import type { Athlete, RankingEntry, Club } from '../types/api';
+import { ClubGroups } from './Groups';
+import { ClubManageSection } from './ClubCreate';
+import { useAthletes, useAthlete, useScopedAthlete, useAthleteDocs, useMyAthleteProfile, useClaimAthlete, useRankings, useClubs, useClub, useTournamentsLive } from '../lib/queries';
+import { ClubScheduleBrowser } from './Schedule';
+import type { Athlete, AthleteDoc, RankingEntry, Club, ClubDetail } from '../types/api';
 
 function useDebounced<T>(v: T, ms = 300) {
   const [v2, setV2] = useState(v);
@@ -36,7 +39,7 @@ export function Athletes() {
 export function AthleteDetail() {
   const { t } = useLang();
   const { id } = useParams();
-  const { can } = useAuth();
+  const { can, user, hasRole } = useAuth();
   const qc = useQueryClient();
   const RESULT: Record<string, string> = { champion: t('r.champion'), finalist: t('r.finalist'), semifinalist: t('r.semi'), participant: t('r.part'), registered: t('r.reg') };
   const { data, isLoading, isError, refetch } = useAthlete(id);
@@ -45,6 +48,7 @@ export function AthleteDetail() {
   // fields from it.
   const canManage = can('athletes.manage');
   const { data: scoped } = useScopedAthlete(id, canManage);
+  const { data: mine } = useMyAthleteProfile(!!user && hasRole('athlete'));
   const [edit, setEdit] = useState(false);
   const [form, setForm] = useState({ first_name: '', last_name: '', weight_kg: '', level: '', country: '' });
   const [msg, setMsg] = useState('');
@@ -142,7 +146,7 @@ export function AthleteDetail() {
       {!data.history.length ? <div className="card p-4 text-sm" style={{ color: 'var(--muted)' }}>{t('a.noHist')}</div> :
         <DataTable cols={[t('a.tournament'), t('a.date'), t('res.category'), t('a.result')]}
           rows={data.history.map((h, i: number) => [<Link key={i} to={`/tournaments/${h.tournament_id}`}>{h.tournament}</Link>, h.date, h.category, <Badge key={i} tone="gold">{RESULT[h.result] ?? h.result}</Badge>])} />}
-      <AthleteDocs id={id} />
+      <AthleteDocs id={id} emptyText={mine && String(mine.id) === String(id ?? '') ? t('ath.noDocs') : undefined} />
     </div>
   );
 }
@@ -174,7 +178,10 @@ export function Rankings() {
 
 export function Clubs() {
   const { t } = useLang();
-  const { data: raw, isLoading, isError, refetch } = useClubs();
+  const [q, setQ] = useState('');
+  const [city, setCity] = useState('');
+  const [country, setCountry] = useState('');
+  const { data: raw, isLoading, isError, refetch } = useClubs(q, city, country);
   const data: Club[] = pageItems(raw);
   // NOTE: gate on flags, never on a JSX element (always truthy).
   const cEmpty = !isLoading && !isError && !data.length;
@@ -182,6 +189,14 @@ export function Clubs() {
   if (cState) return <div className="space-y-4"><div><span className="eyebrow">{t('c.eyebrow')}</span><h1 className="display text-3xl font-semibold mt-1">{t('c.title')}</h1></div>{
     <QueryState isLoading={isLoading} isError={isError} isEmpty={cEmpty} retry={() => refetch()} emptyTitle={t('c.title')} emptyHint={t('t.emptyHint')} />}</div>;
   return <div className="space-y-4"><div><span className="eyebrow">{t('c.eyebrow')}</span><h1 className="display text-3xl font-semibold mt-1">{t('c.title')}</h1></div>
+    <div className="flex gap-2 flex-wrap">
+      <input aria-label={t('nav.search')} className="field flex-1 min-w-[140px]" placeholder={t('nav.search')}
+             value={q} onChange={(e) => setQ(e.target.value)} />
+      <input aria-label={t('c.city')} className="field w-32" placeholder={t('c.city')}
+             value={city} onChange={(e) => setCity(e.target.value)} />
+      <input aria-label={t('a.country')} className="field w-32" placeholder={t('a.country')}
+             value={country} onChange={(e) => setCountry(e.target.value)} />
+    </div>
     <DataTable cols={[t('res.club'), t('a.country'), t('c.city'), t('c.coach')]}
       rows={data.map((c) => [<Link key={c.id} to={`/clubs/${c.id}`} className="font-semibold">{c.name}</Link>, c.country, c.city, c.coach])} /></div>;
 }
@@ -192,19 +207,26 @@ export function ClubDetail() {
   // B2: roster page grows via "show more" (server paginates, counts stay full-club).
   const [rLimit, setRLimit] = useState(50);
   const { data, isLoading, isError, refetch } = useClub(id, rLimit);
-  const { data: sched } = useClubSchedule(id, !isLoading && !isError);
   // NOTE: gate on flags, never on a JSX element (always truthy).
   if (isLoading || isError) return <div className="space-y-4 max-w-2xl"><QueryState isLoading={isLoading} isError={isError} isEmpty={false}
     retry={() => refetch()} emptyTitle="" emptyHint="" /></div>;
   if (!data) return <div className="space-y-4 max-w-2xl"><Skeleton className="h-60" /></div>;
   const upcoming = data.upcoming_tournaments ?? [];
   const recent = data.recent_results ?? [];
-  const sessions = sched?.items ?? [];
   return (
     <div className="space-y-4 max-w-2xl" data-testid="club-profile">
       <div><Link to="/clubs" className="text-[13px] font-semibold" style={{ color: 'var(--muted)' }}>{t('c.back')}</Link>
-        <h1 className="display text-3xl font-semibold mt-1">{data.name}</h1>
-        <div className="text-sm" style={{ color: 'var(--muted)' }}>{data.country} · {data.city} · {t('c.coach')}: {data.coach} · {t('c.titles')}: {data.titles}</div></div>
+        <div className="flex items-center gap-3 mt-1">
+          {data.logo && <img src={data.logo} alt="" className="w-14 h-14 rounded-xl object-cover flex-none" />}
+          <h1 className="display text-3xl font-semibold">{data.name}</h1>
+        </div>
+        <div className="text-sm" style={{ color: 'var(--muted)' }}>{data.country} · {data.city} · {t('c.coach')}: {data.coach} · {t('c.titles')}: {data.titles}</div>
+        {data.description && <p className="text-sm mt-2">{data.description}</p>}
+        {data.owner && (
+          <div className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
+            {t('club2.owner')}: <Link to={`/coaches/${data.owner.id}`} className="font-semibold underline">{data.owner.name}</Link>
+          </div>
+        )}</div>
       {!!upcoming.length && (
         <section aria-label={t('c.upcoming')}>
           <h2 className="font-bold mb-2">{t('c.upcoming')}</h2>
@@ -241,23 +263,27 @@ export function ClubDetail() {
       )}
       <section aria-label={t('c.schedule')}>
         <h2 className="font-bold mb-2">{t('c.schedule')}</h2>
-        {!sessions.length ? <EmptyState title={t('c.noSchedule')} hint="" /> : (
-          <div className="card divide-y" style={{ borderColor: 'var(--border)' }} data-testid="club-schedule">
-            {sessions.map((s) => (
-              <div key={s.id} className="p-3 text-sm flex items-center gap-3" data-testid="club-schedule-hit">
-                <span className="font-extrabold flex-none">{s.starts_at.slice(0, 16).replace('T', ' ')}</span>
-                <span className="flex-1 min-w-0 truncate font-semibold">{s.title}</span>
-              </div>
-            ))}
-          </div>
-        )}
+        <div data-testid="club-schedule">
+          <ClubScheduleBrowser clubId={id} />
+        </div>
       </section>
       <div className="flex gap-2 flex-wrap">
         <a className="card px-3 py-1.5 text-sm font-semibold" href={`/api/clubs/${id}/report.pdf`}>{t('c.reportPdf')}</a>
         <a className="card px-3 py-1.5 text-sm font-semibold" href={`/api/clubs/${id}/report.xlsx`}>{t('c.reportXlsx')}</a>
       </div>
+      <ClubGroupsWrap id={id} />
+      <ClubManageWrap club={data} />
     </div>
   );
+}
+
+function ClubManageWrap({ club }: { club: ClubDetail }) {
+  return <ClubManageSection club={club} />;
+}
+
+function ClubGroupsWrap({ id }: { id: string | undefined }) {
+  if (id == null) return null;
+  return <ClubGroups clubId={Number(id)} />;
 }
 
 export function LiveAll() {
@@ -276,26 +302,47 @@ export function LiveAll() {
 // Wave 2: athlete's public-kind documents (diplomas/participation/protocol)
 // with re-download. Spravki (PII) are excluded server-side; guests see nothing
 // (endpoint requires login).
-function AthleteDocs({ id }: { id: string | undefined }) {
+// Shared doc-list presentation (athlete profile + guardian ward card).
+// Data fetching stays in the callers (AthleteDocs / WardDetail).
+export function AthleteDocList({ docs }: { docs: AthleteDoc[] }) {
   const { t } = useLang();
-  const { user } = useAuth();
-  const { data, isLoading } = useAthleteDocs(id, !!user);
-  if (!user || isLoading) return null;
-  if (!data?.length) return null;
   return (
     <div className="space-y-2">
-      <h2 className="font-bold">{t('a.docs')}</h2>
       <DataTable cols={[t('res.diploma'), t('res.category'), t('res.place')]}
-        rows={data.map((d) => [
+        rows={docs.map((d) => [
           <Link key={d.code} to={`/verify/${d.code}`} className="font-semibold">{d.tournament} · {d.date}</Link>,
           d.category || '—',
           d.place || d.kind,
         ])} />
       <div className="flex gap-2 flex-wrap">
-        {data.map((d) => (
+        {docs.map((d) => (
           <a key={d.code} className="card px-3 py-1.5 text-sm font-semibold" href={`/api/documents/${d.code}/certificate.pdf`}>{t('v.pdf')} · {d.code.slice(0, 6)}</a>
         ))}
       </div>
+    </div>
+  );
+}
+
+function AthleteDocs({ id, emptyText }: { id: string | undefined; emptyText?: string }) {
+  const { t } = useLang();
+  const { user } = useAuth();
+  const { data, isLoading } = useAthleteDocs(id, !!user);
+  if (!user || isLoading) return null;
+  if (!data?.length) {
+    // Athlete P1: named empty state only where the caller opts in (own docs);
+    // other profiles keep the previous null behavior.
+    if (emptyText == null) return null;
+    return (
+      <div className="space-y-2">
+        <h2 className="font-bold">{t('a.docs')}</h2>
+        <div className="text-sm" style={{ color: 'var(--muted)' }}>{emptyText}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <h2 className="font-bold">{t('a.docs')}</h2>
+      <AthleteDocList docs={data} />
     </div>
   );
 }

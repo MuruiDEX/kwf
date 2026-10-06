@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { api, errMsg, pageItems } from '../lib/api';
-import { useTournament, useRegs } from '../lib/queries';
+import { useTournament, useRegs, useMyGroups, useGroup } from '../lib/queries';
 import { useLang } from '../i18n';
 import { useAuth } from '../auth';
 import { Skeleton } from '../components/ui/core';
@@ -37,6 +37,9 @@ export function BulkRegSection({ athletes, tournaments }: { athletes: Athlete[];
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const [q, setQ] = useState('');
+  const [groupId, setGroupId] = useState('');
+  const { data: myGroups } = useMyGroups(!!athletes.length);
+  const { data: groupDetail } = useGroup(groupId ? Number(groupId) : null, !!groupId);
   const { data: tt, isLoading: ttLoading } = useTournament(tid != null ? String(tid) : undefined);
   const cats: Category[] = tt?.categories ?? [];
   // Already-registered athletes: hidden from the selectable list, shown
@@ -45,7 +48,9 @@ export function BulkRegSection({ athletes, tournaments }: { athletes: Athlete[];
   const regs: Registration[] = pageItems(regsRaw);
   const regByAthlete = new Map(regs.map((r) => [r.athlete_id, r]));
   const ql = q.trim().toLowerCase();
-  const pool = athletes.filter((a) => !regByAthlete.has(a.id) && (!ql || a.name.toLowerCase().includes(ql)));
+  const inGroup = groupDetail ? new Set(groupDetail.members.map((m) => m.id)) : null;
+  const pool = athletes.filter((a) => !regByAthlete.has(a.id) && (!ql || a.name.toLowerCase().includes(ql)) &&
+    (!inGroup || inGroup.has(a.id)));
   const done = athletes.filter((a) => regByAthlete.has(a.id));
 
   if (!can('athletes.manage')) return null;
@@ -91,6 +96,13 @@ export function BulkRegSection({ athletes, tournaments }: { athletes: Athlete[];
           <div className="text-sm" style={{ color: 'var(--muted)' }}>{t('bulk.noCat2')}</div>
         ) : (
           <div className="space-y-1">
+            {(myGroups ?? []).length > 0 && (
+              <select aria-label={t('bulk.group')} className="field w-full" value={groupId}
+                      onChange={(e) => setGroupId(e.target.value)}>
+                <option value="">{t('bulk.allGroups')}</option>
+                {(myGroups ?? []).map((g) => <option key={g.id} value={String(g.id)}>{g.name}</option>)}
+              </select>
+            )}
             <input aria-label={t('nav.search')} className="field w-full" placeholder={t('nav.search')}
                    value={q} onChange={(e) => setQ(e.target.value)} />
             {pool.map((a) => {

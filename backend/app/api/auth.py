@@ -27,6 +27,17 @@ class OrgRequestIn(BaseModel):
     org_name: str = Field(min_length=2, max_length=255)
     message: str = Field(default="", max_length=512)
 
+class ProfileIn(BaseModel):
+    """Self-profile edit allowlist (Coach 2.0 P1). Role/email/password/
+    permissions are never accepted here — pydantic drops unknown extras."""
+    full_name: str | None = Field(default=None, max_length=255)
+    bio: str | None = Field(default=None, max_length=2000)
+    city: str | None = Field(default=None, max_length=128)
+    country: str | None = Field(default=None, max_length=64)
+    specialization: str | None = Field(default=None, max_length=128)
+    experience_years: int | None = Field(default=None, ge=0, le=80)
+    is_public: bool | None = None
+
 @router.post("/register")
 def register(data: Register, request: Request, response: Response, db: Session = Depends(get_db)):
     if db.query(User).filter_by(email=data.email).first():
@@ -104,3 +115,57 @@ def request_organizer(data: OrgRequestIn, request: Request, db: Session = Depend
     db.commit()
     db.refresh(r)
     return {"ok": True, "id": r.id}
+
+
+def _self_profile(db: Session, user: User):
+    """Get-or-create the caller's own profile row (never for other users)."""
+    from app.models.coach_profile import CoachProfile
+    p = db.query(CoachProfile).filter_by(user_id=user.id).first()
+    if not p:
+        p = CoachProfile(user_id=user.id)
+        db.add(p)
+        db.flush()
+    return p
+
+
+def _profile_out(user: User, p) -> dict:
+    base = f"/api/media/avatar/{p.avatar_path}" if p.avatar_path else None
+    return {"user_id": user.id, "full_name": user.full_name, "bio": p.bio,
+            "city": p.city, "country": p.country, "specialization": p.specialization,
+            "experience_years": p.experience_years, "is_public": p.is_public,
+            "avatar": base}
+
+
+@router.get("/profile")
+def get_profile(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Own profile (creates the row lazily on first read)."""
+    p = _self_profile(db, user)
+    db.commit()
+    db.refresh(p)
+    return _profile_out(user, p)
+
+
+@router.put("/profile")
+def update_profile(data: ProfileIn, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Self-profile edit (Coach 2.0 P1). Only allowlisted fields; identity
+    stays on User.full_name. Audited."""
+    p = _self_profile(db, user)
+    if data.full_name is not None:
+        user.full_name = data.full_name.strip()[:255]
+    if data.bio is not None:
+        p.bio = data.bio.strip()[:2000]
+    if data.city is not None:
+        p.city = data.city.strip()[:128]
+    if data.country is not None:
+        p.country = data.country.strip()[:64]
+    if data.specialization is not None:
+        p.specialization = data.specialization.strip()[:128]
+    if data.experience_years is not None:
+        p.experience_years = data.experience_years
+    if data.is_public is not None:
+        p.is_public = data.is_public
+    db.add(AuditLog(actor_id=user.id, action="updated profile", entity="user", entity_id=user.id))
+    db.commit()
+    db.refresh(p)
+    db.refresh(user)
+    return _profile_out(user, p)

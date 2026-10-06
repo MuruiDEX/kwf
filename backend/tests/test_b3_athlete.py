@@ -190,3 +190,42 @@ def test_profile_no_nplus1():
     finally:
         event.remove(engine, "before_cursor_execute", count)
     assert len(calls) <= 10, f"N+1 suspected: {len(calls)} SELECTs"
+
+
+def test_create_athlete_scope_and_validation():
+    """D2 P1 contract for POST /api/athletes (used by the coach creation UI):
+    organizer may attach anywhere; coach only to own clubs (403 otherwise);
+    unknown club 400; validation 422; anonymous 401."""
+    from tests.test_p2 import auth_headers
+    org = auth_headers("organizer")
+    coach = auth_headers("coach")
+    cid = client.post("/api/clubs", json={"name": "B3 Scope Dojo", "country": "KZ",
+                                           "city": "A", "coach_name": "O"},
+                      headers=org).json()["id"]
+    base = {"first_name": "B3", "last_name": "Scope", "gender": "male",
+            "birth_year": 2014, "weight_kg": 35, "country": "KZ", "club_id": cid}
+    # coach cannot attach to an organizer-owned (foreign) club
+    assert client.post("/api/athletes", json=base, headers=coach).status_code == 403
+    # ... but unattached creation works and lands in the coach's scope
+    r = client.post("/api/athletes", json={**base, "club_id": None}, headers=coach)
+    assert r.status_code == 200, r.text
+    aid = r.json()["id"]
+    assert client.get(f"/api/athletes/{aid}/scoped", headers=coach).status_code == 200
+    # organizer may attach to any club
+    r = client.post("/api/athletes", json=base, headers=org)
+    assert r.status_code == 200, r.text
+    # unknown club -> 400 (not 404: the athlete payload, not the route, is bad)
+    assert client.post("/api/athletes", json={**base, "club_id": 999999999},
+                       headers=org).status_code == 400
+    # validation: blank names, out-of-range birth/weight, bad gender -> 422
+    bad = [
+        {**base, "first_name": ""},
+        {**base, "last_name": ""},
+        {**base, "birth_year": 1800},
+        {**base, "weight_kg": -1},
+        {**base, "gender": "other"},
+    ]
+    for body in bad:
+        assert client.post("/api/athletes", json=body, headers=org).status_code == 422
+    client.cookies.clear()
+    assert client.post("/api/athletes", json=base).status_code == 401

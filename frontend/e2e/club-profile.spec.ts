@@ -25,7 +25,7 @@ test('seeded club profile renders all sections', async ({ page }) => {
   // report downloads stay
   await expect(page.getByRole('link', { name: /PDF/ })).toBeVisible();
   // no sessions seeded -> empty schedule state (not a crash)
-  await expect(page.getByText('Расписание не опубликовано.')).toBeVisible();
+  await expect(page.getByText('Занятий пока нет.')).toBeVisible();
 });
 
 test('roster show-more paginates a big club', async ({ page, request }) => {

@@ -180,8 +180,9 @@ def test_recent_no_nplus1():
     finally:
         event.remove(engine, "before_cursor_execute", count)
     # 1 club + 1 roster page + 1 athlete_count + 1 titles + 1 upcoming +
-    # 1 recent tids + ~3 batched podium queries: must stay bounded
-    assert len(calls) <= 10, f"N+1 suspected: {len(calls)} SELECTs"
+    # 1 recent tids + ~3 batched podium queries + 1 owner card (Coach 2.0 P2):
+    # must stay bounded (constant queries only — N+1 would scale with data)
+    assert len(calls) <= 11, f"N+1 suspected: {len(calls)} SELECTs"
 
 
 def test_schedule_public_safe():
@@ -215,7 +216,8 @@ def test_schedule_public_safe():
     assert body["total"] == 1
     item = body["items"][0]
     assert item["title"] == "Future drill"
-    assert set(item) <= {"id", "title", "starts_at", "ends_at"}
+    # D2 P3: public items carry the group NAME (nullable); still no note/coach.
+    assert set(item) <= {"id", "title", "starts_at", "ends_at", "group_id", "group"}
     for banned in ("note", "coach_id", "club_id"):
         assert banned not in item, banned
     assert set(body) >= {"items", "total", "limit", "offset"}
@@ -257,7 +259,8 @@ def test_schedule_public_safe():
     assert body["total"] == 1
     item = body["items"][0]
     assert item["title"] == "Future drill"
-    assert set(item) <= {"id", "title", "starts_at", "ends_at"}
+    # D2 P3: public items carry the group NAME (nullable); still no note/coach.
+    assert set(item) <= {"id", "title", "starts_at", "ends_at", "group_id", "group"}
     for banned in ("note", "coach_id", "club_id"):
         assert banned not in item, banned
     assert set(body) >= {"items", "total", "limit", "offset"}

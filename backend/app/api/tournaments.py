@@ -237,6 +237,13 @@ def list_regs(tid: int, request: Request, status: str = "", pg: dict = Depends(p
             .filter(*filt).order_by(Registration.id)
             .offset(pg["offset"]).limit(pg["limit"]).all())
     out = []
+    # C2: approved guardians see their wards' moderation status (read-only;
+    # computed live per request, so revocation takes effect immediately).
+    # Resolved lazily: staff see everything and anonymous sees nothing, so
+    # neither path pays for a query whose result cannot change the output
+    # (keeps the P1 list query budget).
+    from app.api.guardian import guardian_athlete_ids as _guardian_ids
+    wards: set[int] | None = None
     for r, a, club, cat in rows:
         # Wave 3: moderation status visible to staff, plus to the coach who
         # created the athlete (their own application); others get no status.
@@ -245,6 +252,10 @@ def list_regs(tid: int, request: Request, status: str = "", pg: dict = Depends(p
         show_status = staff or (user and a and (
             a.created_by == user.id or a.user_id == user.id
             or (club and club.owner_id == user.id)))
+        if not show_status and user and a:
+            if wards is None:
+                wards = _guardian_ids(db, user.id)
+            show_status = a.id in wards
         # B1: roster rows carry derived bands from their OWN category, and
         # only when the registration is approved (the relevant public fact).
         # Exact birth_year/weight and internal seed are not public.
