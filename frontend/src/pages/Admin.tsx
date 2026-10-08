@@ -1,14 +1,15 @@
 import { useState } from 'react';
-import { Link, NavLink, Navigate, Route, Routes } from 'react-router-dom';
-import { Bell, FileText, Inbox, LayoutDashboard, Newspaper, ScrollText, Trophy, type LucideIcon } from 'lucide-react';
+import { Link, NavLink, Route, Routes } from 'react-router-dom';
+import { Bell, FileText, Inbox, LayoutDashboard, Newspaper, Scale, ScrollText, Timer, Trophy, Users, type LucideIcon } from 'lucide-react';
 import { useLang } from '../i18n';
 import { errMsg, pageItems } from '../lib/api';
 import { useAuth, notify } from '../auth';
 import { Badge, DataTable, EmptyState, Skeleton } from '../components/ui/core';
 import { STATUS_TONE } from '../components/ui/tournament';
 import { AdminRequests } from './AuthForms';
-import { useAudit, useAdminUsers, useAdminUserDetail, usePermCatalog, useUpdateUser, useNews, useOrgRequests, useTournaments } from '../lib/queries';
-import type { AdminUser, AuditItem, NewsItem, OrganizerRequest, Role, Tournament } from '../types/api';
+import { ROLE_NAV } from '../config/navigation';
+import { useAudit, useAdminUsers, useAdminUserDetail, useClubs, usePermCatalog, useUpdateUser, useNews, useOrgRequests, useTournaments } from '../lib/queries';
+import type { AdminUser, AuditItem, Club, NewsItem, OrganizerRequest, Role, Tournament } from '../types/api';
 
 function Err({ retry }: { retry: () => void }) {
   const { t } = useLang();
@@ -323,17 +324,71 @@ function AdminRequestsSection() {
   return <Section title={t('adm.requests')}><AdminRequests /></Section>;
 }
 
-// ---------- layout ----------
+function AdminClubs() {
+  const { t } = useLang();
+  const [q, setQ] = useState('');
+  const { data: raw, isLoading, isError, refetch } = useClubs();
+  if (isLoading) return <Skeleton className="h-60" />;
+  if (isError || !raw) return <Err retry={() => refetch()} />;
+  const list = pageItems<Club>(raw).filter((c) => !q || `${c.name} ${c.city ?? ''}`.toLowerCase().includes(q.toLowerCase()));
+  return (
+    <Section title={t('adm.clubs')}>
+      <input aria-label={t('adm.searchPh')} className="field w-full" placeholder={t('adm.searchPh')} value={q} onChange={(e) => setQ(e.target.value)} />
+      {!list.length ? <EmptyState title={t('adm.empty')} hint={t('t.emptyHint')} /> :
+        <DataTable cols={['ID', t('a.name'), t('c.city')]}
+          rows={list.slice(0, 100).map((c) => [c.id,
+            <Link key={c.id} to={`/clubs/${c.id}`} className="font-semibold">{c.name}</Link>, c.city ?? '—'])} />}
+    </Section>
+  );
+}
+
+function AdminRoles() {
+  const { t } = useLang();
+  const { hasRole } = useAuth();
+  const { data: catalog, isLoading, isError, refetch } = usePermCatalog(hasRole('admin'));
+  if (isLoading) return <Skeleton className="h-60" />;
+  if (isError || !catalog) return <Err retry={() => refetch()} />;
+  const groups: Record<string, typeof catalog> = {};
+  for (const p of catalog ?? []) (groups[p.group] ??= []).push(p);
+  return (
+    <Section title={t('adm.roles')}>
+      {Object.entries(groups).map(([g, items]) => (
+        <div key={g} className="card p-4 space-y-1.5">
+          <div className="text-xs font-extrabold uppercase tracking-wider" style={{ color: 'var(--muted)' }}>{t(`perm.g.${g}`)}</div>
+          {(items ?? []).map((p) => (
+            <div key={p.key} className="text-sm flex items-center gap-2">
+              <span className="font-semibold flex-1">{t(`perm.${p.key}`)}</span>
+              <span className="text-xs" style={{ color: 'var(--muted)' }}>{(p.roles ?? []).join(', ')}{p.grantable ? '' : ` · ${t('adm.locked')}`}</span>
+            </div>
+          ))}
+        </div>
+      ))}
+    </Section>
+  );
+}
+
+function AdminSystem() {
+  const { t } = useLang();
+  return (
+    <Section title={t('adm.system')}>
+      <div className="card p-5 space-y-2 text-sm">
+        <div className="flex gap-2"><span className="font-bold flex-1">{t('adm.sysHealth')}</span><Badge tone="gold">ok</Badge></div>
+        <div className="flex gap-2"><span className="font-bold flex-1">{t('adm.sysVersion')}</span><span style={{ color: 'var(--muted)' }}>KWF 3.0</span></div>
+        <div className="text-xs" style={{ color: 'var(--muted)' }}>SSE · i18n ru/kk · RBAC 12 perms</div>
+      </div>
+    </Section>
+  );
+}
+
+// ---------- layout (nav from single source of truth: config/navigation ROLE_NAV.admin) ----------
+const ADMIN_ICONS: Record<string, LucideIcon> = {
+  '/admin': LayoutDashboard, '/admin/requests': Inbox, '/admin/users': FileText,
+  '/admin/clubs': Users, '/admin/tournaments': Trophy, '/admin/news': Newspaper,
+  '/admin/roles': Scale, '/admin/audit': ScrollText, '/admin/system': Timer,
+};
 export function Admin() {
   const { t } = useLang();
-  const NAV: [string, string, LucideIcon][] = [
-    ['/admin', t('adm.dash'), LayoutDashboard],
-    ['/admin/requests', t('adm.requests'), Inbox],
-    ['/admin/tournaments', t('adm.tournaments'), Trophy],
-    ['/admin/news', t('adm.news'), Newspaper],
-    ['/admin/users', t('adm.users'), FileText],
-    ['/admin/audit', t('adm.audit'), ScrollText],
-  ];
+  const NAV: [string, string, LucideIcon][] = ROLE_NAV.admin.map((it) => [it.to, t(it.labelKey), ADMIN_ICONS[it.to] ?? Bell]);
   const link = ({ isActive }: { isActive: boolean }) => ({
     display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px', borderRadius: 10,
     fontSize: 13.5, fontWeight: 800,
@@ -361,7 +416,10 @@ export function Admin() {
           <Route path="tournaments" element={<AdminTournaments />} />
           <Route path="news" element={<AdminNews />} />
           <Route path="users" element={<UsersDirectory />} />
+          <Route path="clubs" element={<AdminClubs />} />
+          <Route path="roles" element={<AdminRoles />} />
           <Route path="audit" element={<AdminAudit />} />
+          <Route path="system" element={<AdminSystem />} />
         </Routes>
       </div>
     </div>

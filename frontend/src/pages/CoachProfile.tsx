@@ -2,6 +2,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useLang } from '../i18n';
 import { useCoachProfile, useClubSchedule } from '../lib/queries';
 import { DataTable, Skeleton } from '../components/ui/core';
+import { AvatarInitial } from './ProfileEdit';
 
 /** Coach 2.0 P3: public coach profile (private profiles are 404 — no oracle).
  *  Every number below is derived from real data; nothing is fabricated. */
@@ -29,10 +30,7 @@ export function CoachProfile() {
           {data.avatar ? (
             <img src={data.avatar} alt="" className="w-14 h-14 rounded-full object-cover flex-none" />
           ) : (
-            <span className="grid place-items-center w-14 h-14 rounded-full font-black text-xl flex-none"
-              style={{ background: 'var(--navy)', color: 'var(--bg)' }} aria-hidden>
-              {(data.name || '?').slice(0, 1).toUpperCase()}
-            </span>
+            <AvatarInitial name={data.name} size={56} />
           )}
           <div className="min-w-0">
             <h1 className="display text-2xl font-semibold leading-tight break-words">{data.name}</h1>

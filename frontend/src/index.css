@@ -210,6 +210,24 @@ table.data thead th { position: sticky; top: 0; background: var(--surface); z-in
   .discovery-card .discovery-arrow { display: none; }
 }
 
+/* ---------- Role UX 3.1: operational pipeline strip (tokens only, no role colors) ---------- */
+.pipeline { display: flex; align-items: stretch; gap: 0; overflow-x: auto; padding: 2px; }
+.pipeline-item { display: flex; align-items: center; flex: 1 1 0; min-width: 0; }
+.pipeline-line { width: 18px; height: 2px; background: var(--border); margin: 0 6px; flex: none; }
+.pipeline-line.done { background: var(--accent); }
+.pipeline-step { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; color: var(--muted); min-width: 0; flex: 1; padding: 6px 4px; border-radius: 8px; }
+a .pipeline-step:hover { color: var(--text); background: var(--accent-soft); }
+.pipeline-dot { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--border); display: grid; place-items: center; font-size: 11px; background: var(--surface-2); flex: none; }
+.pipeline-step.done { color: var(--text); }
+.pipeline-step.done .pipeline-dot { border-color: var(--accent); background: var(--accent); color: #05080D; }
+.pipeline-step.now { color: var(--text); }
+.pipeline-step.now .pipeline-dot { border-color: var(--accent); color: var(--accent); }
+.pipeline-count { font-size: 15px; font-weight: 800; color: var(--text); font-family: var(--font-display); }
+@media (max-width: 640px) {
+  .pipeline-step { font-size: 11px; gap: 6px; }
+  .pipeline-dot { width: 20px; height: 20px; }
+}
+
 /* ---------- Wave 1: print spravki preview (browser print, A4) ---------- */
 @media print {
   body * { visibility: hidden; }

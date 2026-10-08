@@ -10,6 +10,10 @@ import { ExportBar, Results } from './Documents';
 import { STATUS_TONE, FLOW } from '../components/ui/tournament';
 import { useTournament, useRegs, useBrackets, useValidation, useGenBrackets, useGenSchedule, useStatusChange, useCheckin, useWeighIn, useMoveReg, useLiveState, useTatamis, useReferees, useAssignReferee, useUpdateTournament, useCreateCategory, useUpdateCategory, useRegStatus, useBulkRegStatus, useMyAthleteProfile, useMyRegistrations, useCorrectMatch, useGuardianRegs, useScopedAthlete } from '../lib/queries';
 import { MyParticipation } from './MyParticipation';
+import { RegWizard } from './RegWizard';
+import { Readiness, type TabId as OpsTabId } from '../features/tournament/Readiness';
+import { ImportBox } from '../features/tournament/ImportBox';
+import { JudgesCard } from '../features/tournament/JudgesCard';
 import type { Bracket, BracketMatch, Category, LiveEvent, MyAthlete, Registration, TournamentDetail as TournamentDetailT, TournamentStatus, ValidationItem } from '../types/api';
 
 interface ImportSummary {
@@ -119,8 +123,8 @@ export function TournamentDetail() {
           </div>
         </div>
       </div>
-      <div className="tabs" role="tablist" aria-label={tt.name}>
-        {TABS.map(x => <button key={x} role="tab" className="tab" aria-selected={tab === x} onClick={() => setTab(x)}>{TAB_RU[x]}</button>)}
+      <div className="tabs sticky top-16 z-10 overflow-x-auto whitespace-nowrap" role="tablist" aria-label={tt.name} style={{ background: 'var(--bg)' }}>
+        {TABS.map(x => <button key={x} role="tab" className="tab flex-none" aria-selected={tab === x} onClick={() => setTab(x)}>{TAB_RU[x]}</button>)}
       </div>
       {viewerAthlete && viewerReg && id && (
         <MyParticipation tid={id} tt={tt} me={viewerAthlete} reg={viewerReg} />
@@ -211,103 +215,6 @@ export function TournamentDetail() {
 
 type TabId = (typeof TABS)[number];
 
-const CHECK_TAB: Record<string, TabId> = {
-  categories: 'overview', registrations: 'participants', weighin: 'weighin',
-  brackets: 'brackets', conflicts: 'schedule',
-};
-const CHECK_ORDER = ['categories', 'registrations', 'weighin', 'brackets', 'conflicts'];
-
-/** Operational overview: readiness %, blockers with actions, next step.
- *  Public viewers see only the stage + progress; staff see the checklist. */
-function Readiness({ tt, validation, canManage, onTab }: {
-  tt: TournamentDetailT; validation: ValidationItem[] | undefined; canManage: boolean; onTab: (t: TabId) => void;
-}) {
-  const { t } = useLang();
-  if (!validation) return <div className="card p-5"><Skeleton className="h-20" /></div>;
-  const top = validation.filter(v => CHECK_ORDER.includes(v.key));
-  const extra = validation.filter(v => !CHECK_ORDER.includes(v.key) && !v.ok);
-  const done = top.filter(v => v.ok).length;
-  const pct = top.length ? Math.round((done / top.length) * 100) : 0;
-  const next = CHECK_ORDER.map(k => top.find(v => v.key === k)).find(v => v && !v.ok);
-  const rows = canManage ? [...top, ...extra] : [];
-  return (
-    <div className="card p-5 space-y-3">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="font-extrabold text-sm flex-1">{t('ov.ready')} · {pct}%</div>
-        <span className="text-xs font-bold" style={{ color: 'var(--muted)' }}>{t('ov.stage')}: {t(`status.${tt.status}`)}</span>
-      </div>
-      <div className="h-2 rounded-full overflow-hidden" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-label={t('ov.ready')}
-        style={{ background: 'var(--border)' }}>
-        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: 'var(--accent)', transition: 'width .4s ease' }} />
-      </div>
-      {rows.map(v => {
-        const tab = CHECK_TAB[v.key] ?? (v.key.startsWith('cat-') ? 'participants' : 'overview');
-        const warn = v.level === 'warning';
-        return (
-          <div key={v.key} className="check-row">
-            {v.ok
-              ? <CheckCircle2 size={16} className="flex-none mt-0.5" style={{ color: 'var(--ok)' }} />
-              : <AlertTriangle size={16} className="flex-none mt-0.5" style={{ color: warn ? 'var(--warn)' : 'var(--live)' }} />}
-            <span className="flex-1">{v.message}
-              {v.suggestion && <span className="block text-[13px]" style={{ color: 'var(--muted)' }}>→ {v.suggestion}</span>}
-            </span>
-            {canManage && !v.ok && tab !== 'overview' && (
-              <button className="btn-ghost text-xs !py-1.5 flex-none" onClick={() => onTab(tab)}>{t('ov.open')}</button>
-            )}
-          </div>
-        );
-      })}
-      {canManage && next && CHECK_TAB[next.key] !== 'overview' && (
-        <div className="flex items-center gap-2 pt-1">
-          <span className="text-xs font-bold" style={{ color: 'var(--muted)' }}>{t('ov.next')}:</span>
-          <button className="btn-primary text-sm" onClick={() => onTab(CHECK_TAB[next.key])}>
-            {t(`tab.${CHECK_TAB[next.key]}`)} <ArrowRight size={15} />
-          </button>
-        </div>
-      )}
-      {canManage && !next && <div className="text-sm" style={{ color: 'var(--muted)' }}>{t('ov.allOk')}</div>}
-    </div>
-  );
-}
-
-function ImportBox({ tid }: { tid: string }) {
-  const { t } = useLang();
-  const qc = useQueryClient();
-  const [summary, setSummary] = useState<ImportSummary | null>(null);
-  const [busy, setBusy] = useState(false);
-  const upload = async (f: File | undefined) => {
-    if (!f) return;
-    setBusy(true);
-    try {
-      const fd = new FormData();
-      fd.append('file', f);
-      const res = await fetch(`/api/tournaments/${tid}/registrations/import`, { method: 'POST', body: fd, credentials: 'include', headers: { 'Accept-Language': localStorage.getItem('kwf-lang') || 'ru' } });
-      const body = await res.json();
-      if (!res.ok) throw new Error(body.detail || `Error ${res.status}`);
-      setSummary(body);
-      qc.invalidateQueries({ queryKey: ['regs', tid] });
-    } catch (e: unknown) { setSummary({ summary: errMsg(e), errors: [] }); }
-    setBusy(false);
-  };
-  return (
-    <div className="card p-3 text-sm space-y-2">
-      <label className="font-bold block">{t('p.impT')} <span className="font-normal" style={{ color: 'var(--muted)' }}>{t('p.impHint')}</span></label>
-      <input type="file" accept=".csv,.xlsx" aria-label={t('p.impT')} disabled={busy}
-             onChange={e => upload(e.target.files?.[0])} />
-      {summary && (
-        <div>
-          <div>{summary.summary}</div>
-          {!!summary.errors?.length && (
-            <ul className="mt-1 text-xs" style={{ color: 'var(--muted)' }}>
-              {summary.errors.slice(0, 5).map((e, i: number) => <li key={i}>{t('p.impRow')} {e.row}: {e.error}</li>)}
-            </ul>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 const WI_LABEL: Record<string, string> = { ok: 'w.ok', over: 'w.over', under: 'w.under', pending: 'w.pending' };
 
 function Participants({ tid }: { tid: string }) {
@@ -323,6 +230,7 @@ function Participants({ tid }: { tid: string }) {
   const [note, setNote] = useState<Record<number, string>>({});
   const [bulkNote, setBulkNote] = useState('');
   const [pMsg, setPMsg] = useState('');
+  const [showWizard, setShowWizard] = useState(false);
   const { data: regsRaw } = useRegs(tid, undefined, statusF);
   const regs: Registration[] = pageItems(regsRaw);
   const toggle = useCheckin(tid);
@@ -369,6 +277,14 @@ function Participants({ tid }: { tid: string }) {
   return (
     <div className="space-y-2">
       {canImport && <ImportBox tid={tid} />}
+      {canImport && !locked && (
+        <div>
+          <button className="btn-ghost text-xs !py-1.5" onClick={() => setShowWizard((v) => !v)} aria-expanded={showWizard}>
+            {showWizard ? '—' : `+ ${t('regwiz.title')}`}
+          </button>
+          {showWizard && <div className="mt-2"><RegWizard tid={tid} /></div>}
+        </div>
+      )}
       <div className="flex gap-2 items-center text-sm flex-wrap">
         <span style={{ color: 'var(--muted)' }}>{t('p.checkin')}: {done}/{regs.length}</span>
         <input aria-label={t('nav.search')} className="field !py-1.5 !text-[13px] flex-1 min-w-[140px]"
@@ -705,36 +621,7 @@ function CategoriesCard({ tid, categories }: { tid: string; categories: Category
   );
 }
 
-function JudgesCard({ tid }: { tid: string }) {
-  const { t } = useLang();
-  const { data: tatamis, isLoading } = useTatamis(tid);
-  const { data: refs } = useReferees();
-  const assign = useAssignReferee(tid);
-  const [msg, setMsg] = useState('');
-  if (isLoading) return <Skeleton className="h-24" />;
-  const set = (tatami_id: number, v: string) => {
-    setMsg('');
-    assign.mutate({ tatami_id, referee_id: v ? Number(v) : null }, {
-      onError: (e: unknown) => setMsg(`${t('common.err')}: ` + errMsg(e)),
-    });
-  };
-  return (
-    <div className="card p-4 space-y-2">
-      <h3 className="font-bold">{t('judge.title')}</h3>
-      {(tatamis ?? []).map((tm) => (
-        <div key={tm.id} className="flex items-center gap-2 text-sm">
-          <span className="font-semibold flex-1">{tm.name}</span>
-          <select aria-label={`${t('judge.title')} ${tm.name}`} className="field" value={tm.referee_id ?? ''}
-                  onChange={(e) => set(tm.id, e.target.value)} disabled={assign.isPending}>
-            <option value="">—</option>
-            {(refs ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-          </select>
-        </div>
-      ))}
-      {msg && <div className="text-sm">{msg}</div>}
-    </div>
-  );
-}
+// JudgesCard lives in features/tournament (imported above).
 
 // ---------- Wave 6: controlled correction of one pending R1 pair ----------
 

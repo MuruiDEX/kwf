@@ -86,7 +86,7 @@ export function GuardianSection() {
 
 // Read-only ward dashboard: permitted profile + guardian registrations +
 // permitted non-spravka documents. No mutation control is rendered anywhere.
-function WardDetail({ id, onGone }: { id: number; onGone: () => void }) {
+export function WardDetail({ id, onGone }: { id: number; onGone: () => void }) {
   const { t } = useLang();
   const { user } = useAuth();
   const qc = useQueryClient();

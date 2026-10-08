@@ -1,18 +1,23 @@
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { Bell, Menu, Moon, Sun, Search, Trophy, User, ShieldCheck, LogOut } from 'lucide-react';
+import { Bell, Menu, Moon, Sun, Search, Trophy, User, ShieldCheck } from 'lucide-react';
 import { useLang, LangToggle } from '../../i18n';
 import { api } from '../../lib/api';
 import { useAuth } from '../../auth';
+import { PUBLIC_NAV } from '../../config/navigation';
+import { AccountMenu } from './AccountMenu';
 import { ProfileAvatar } from '../../pages/ProfileEdit';
 import type { KwfNotification, NotesResponse } from '../../types/api';
 
 export function Header({ onCmdk }: { onCmdk: () => void }) {
   const { t } = useLang();
+  const nav = useNavigate();
+  const { user, can } = useAuth();
+  // Single source of truth: public discovery nav from config. Role workspaces
+  // live in BottomNav + per-home tabs (no duplicate desktop RoleTabs bar).
   const NAV: [string, string][] = [
-    ['/tournaments', t('nav.tournaments')], ['/athletes', t('nav.athletes')], ['/rankings', t('nav.rankings')],
-    ['/live', t('nav.live')], ['/news', t('nav.news')], ['/clubs', t('nav.clubs')],
-    ['/coaches', t('nav.coaches')],
+    ...PUBLIC_NAV.filter((it) => !it.mobileOnly).map((it) => [it.to, t(it.labelKey)] as [string, string]),
+    ...(can('matches.manage') ? [['/referee', t('nav.referee')] as [string, string]] : []),
   ];
   // Wave A2: persist theme in localStorage (was toggle-only, reset on reload).
   const [dark, setDark] = useState(() => {
@@ -26,15 +31,7 @@ export function Header({ onCmdk }: { onCmdk: () => void }) {
   const [notes, setNotes] = useState<NotesResponse | null>(null);
   const [showNotes, setShowNotes] = useState(false);
   const [menu, setMenu] = useState(false);
-  const nav = useNavigate();
-  const { user, can, hasRole, logout } = useAuth();
   const [showUser, setShowUser] = useState(false);
-  const home = user && hasRole('coach') ? '/coach' : '/me';
-  const out = async () => {
-    setShowUser(false);
-    await logout();
-    nav('/me', { replace: true });
-  };
   // P1: admin icon via permission (admin holds all perms), so users granted
   // roles.manage-equivalent visibility aren't hidden by a raw role check.
   const isAdmin = can('roles.manage');
@@ -65,7 +62,7 @@ export function Header({ onCmdk }: { onCmdk: () => void }) {
   });
   return (
     <header className="header-blur border-b sticky top-0 z-20" style={{ background: 'color-mix(in srgb, var(--bg) 82%, transparent)', borderColor: 'var(--border)' }}>
-      <div className="max-w-6xl mx-auto px-4 h-16 flex items-center gap-2 sm:gap-3 md:gap-5">
+      <div className="max-w-7xl mx-auto px-4 h-16 flex items-center gap-2 sm:gap-3 md:gap-5">
         <Link to="/" className="flex items-center gap-2.5" aria-label="KWF home">
           <span className="grid place-items-center w-9 h-9 rounded-[10px] font-black" style={{ background: 'var(--navy)', color: 'var(--bg)' }}>
             <Trophy size={17} strokeWidth={2.5} />
@@ -115,20 +112,7 @@ export function Header({ onCmdk }: { onCmdk: () => void }) {
                   {user.full_name || user.email}
                 </span>
               </button>
-              {showUser && (
-                <div className="card absolute right-0 top-12 w-56 p-3 z-30 text-sm shadow-xl" style={{ background: 'var(--bg)' }} role="menu" aria-label={t('me.profile')}>
-                  <div className="px-1 pb-2 border-b" style={{ borderColor: 'var(--border)' }}>
-                    <div className="font-extrabold truncate">{user.full_name || '—'}</div>
-                    <div className="text-xs truncate" style={{ color: 'var(--muted)' }}>{user.email}</div>
-                    <div className="text-xs font-bold mt-0.5" style={{ color: 'var(--accent)' }}>{t(`role.${user.role}`)}</div>
-                  </div>
-                  <Link to="/me" onClick={() => setShowUser(false)} className="block py-2 font-bold text-sm">{t('me.profile')}</Link>
-                  <Link to={home} onClick={() => setShowUser(false)} className="block py-2 font-bold text-sm">{t('nav.cabinet')}</Link>
-                  <button onClick={out} className="flex items-center gap-2 py-2 font-bold text-sm w-full text-left">
-                    <LogOut size={15} /> {t('me.out')}
-                  </button>
-                </div>
-              )}
+              {showUser && <AccountMenu onNav={() => setShowUser(false)} />}
             </div>
           ) : (
             <Link to="/me" className="card p-2" aria-label={t('nav.cabinet')} title={t('nav.cabinet')}>

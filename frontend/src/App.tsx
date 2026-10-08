@@ -1,75 +1,38 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Link, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { LangProvider, useLang } from './i18n';
-import { AuthProvider, RequireRole, Toasts, useAuth } from './auth';
-import { Header } from './components/ui/Header';
+import { LangProvider } from './i18n';
+import { AuthProvider, RequireRole, Toasts } from './auth';
 import { CommandMenu } from './components/ui/CommandMenu';
+import { AppShell } from './components/layout/AppShell';
 import { Home } from './pages/Home';
 import { SearchPage } from './pages/Search';
 import { Tournaments } from './pages/Tournaments';
 import { TournamentDetail } from './pages/TournamentDetail';
 import { Athletes, AthleteDetail, Rankings, Clubs, ClubDetail, LiveAll } from './pages/Lists';
-import { TvBoard, Referee } from './pages/TvReferee';
-import { Organizer, Auth } from './pages/Organizer';
-import { Cabinet } from './pages/Cabinet';
-import { Admin, UsersDirectory } from './pages/Admin';
+import { TvBoard } from './pages/TvReferee';
+import { Organizer } from './pages/Organizer';
+import { Admin } from './pages/Admin';
 import { Verify, News, NewsDetail, NewsEditor } from './pages/Documents';
 import { Notifications } from './pages/Notifications';
 import { CoachDirectory } from './pages/CoachDirectory';
 import { CoachProfile } from './pages/CoachProfile';
+import { AthleteHome } from './pages/AthleteHome';
+import { GuardianHome } from './pages/GuardianHome';
+import { CoachHome } from './pages/CoachHome';
+import { RefereeHome } from './pages/RefereeHome';
+import { OrganizerHome } from './pages/OrganizerHome';
+import { MeDispatcher } from './pages/MeDispatcher';
+import { Cabinet } from './pages/Cabinet';
 
 const qc = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1, refetchOnWindowFocus: false } },
 });
 
-function FooterOrgLinks() {
-  // Organizer creation entry is permission-gated: coaches/athletes/public
-  // never see it (backend POST /api/tournaments enforces the same rule).
-  const { t } = useLang();
-  const { can } = useAuth();
-  if (!can('tournaments.create')) return null;
-  return <Link to="/organizer">{t('org.create')}</Link>;
-}
-
-function Footer() {
-  const { t } = useLang();
-  return (
-    <footer className="border-t mt-10" style={{ borderColor: 'var(--border)' }}>
-      <div className="max-w-6xl mx-auto px-4 py-10 grid gap-8 md:grid-cols-4 text-sm">
-        <div>
-          <div className="display text-lg font-semibold">KWF</div>
-          <div className="text-[11px] font-bold tracking-[.18em] mt-0.5" style={{ color: 'var(--accent)' }}>KYOKUSHIN</div>
-          <p className="mt-3 text-[13px] leading-relaxed" style={{ color: 'var(--muted)' }}>{t('foot.tag')}</p>
-        </div>
-        <nav aria-label={t('foot.platform')}>
-          <div className="font-extrabold text-xs uppercase tracking-[.12em] mb-3" style={{ color: 'var(--muted)' }}>{t('foot.platform')}</div>
-          <div className="flex flex-col gap-2"><Link to="/tournaments">{t('nav.tournaments')}</Link><Link to="/live">{t('nav.live')}</Link><Link to="/rankings">{t('nav.rankings')}</Link><Link to="/news">{t('nav.news')}</Link></div>
-        </nav>
-        <nav aria-label={t('foot.athletes')}>
-          <div className="font-extrabold text-xs uppercase tracking-[.12em] mb-3" style={{ color: 'var(--muted)' }}>{t('foot.athletes')}</div>
-          <div className="flex flex-col gap-2"><Link to="/athletes">{t('nav.athletes')}</Link><Link to="/clubs">{t('nav.clubs')}</Link><Link to="/verify">{t('nav.verify')}</Link></div>
-        </nav>
-        <nav aria-label={t('foot.org')}>
-          <div className="font-extrabold text-xs uppercase tracking-[.12em] mb-3" style={{ color: 'var(--muted)' }}>{t('foot.org')}</div>
-          <div className="flex flex-col gap-2"><FooterOrgLinks /><Link to="/referee">{t('cmdk.referee')}</Link><Link to="/me">{t('nav.cabinet')}</Link></div>
-        </nav>
-      </div>
-      <div className="border-t" style={{ borderColor: 'var(--border)' }}>
-        <div className="max-w-6xl mx-auto px-4 py-4 text-xs flex gap-4" style={{ color: 'var(--muted)' }}>
-          <span>KWF</span><span className="ml-auto">{t('foot.rights')}</span>
-        </div>
-      </div>
-    </footer>
-  );
-}
-
 function NotFound() {
-  const { t } = useLang();
   return (
     <div className="card p-8 text-center max-w-md mx-auto fade-up space-y-3">
       <div className="display text-4xl font-semibold">404</div>
-      <div className="font-bold">{t('common.empty')}</div>
       <Link to="/" className="btn-primary text-sm justify-center">KWF</Link>
     </div>
   );
@@ -87,8 +50,7 @@ export default function App() {
       <LangProvider>
         <AuthProvider>
         <BrowserRouter>
-          <Header onCmdk={() => setCmdk(true)} />
-          <main className="max-w-6xl mx-auto px-4 py-6">
+          <AppShell onCmdk={() => setCmdk(true)}>
             <Routes>
               <Route path="/" element={<Home />} />
               <Route path="/search" element={<SearchPage />} />
@@ -103,12 +65,17 @@ export default function App() {
               <Route path="/coaches/:id" element={<CoachProfile />} />
               <Route path="/live" element={<LiveAll />} />
               <Route path="/tv/:id" element={<TvBoard />} />
-              <Route path="/referee" element={<RequireRole roles={['referee', 'organizer']}><Referee /></RequireRole>} />
-              <Route path="/organizer" element={<RequireRole perm="tournaments.manage"><Organizer /></RequireRole>} />
-              <Route path="/coach" element={<RequireRole roles={['coach']}><Cabinet coachOnly /></RequireRole>} />
-              <Route path="/me" element={<Auth />} />
+              {/* Role homes — one product, six work environments */}
+              <Route path="/athlete" element={<RequireRole roles={['athlete']}><AthleteHome /></RequireRole>} />
+              <Route path="/guardian" element={<RequireRole><GuardianHome /></RequireRole>} />
+              <Route path="/coach" element={<RequireRole roles={['coach']}><CoachHome /></RequireRole>} />
+              <Route path="/referee" element={<RequireRole roles={['referee', 'organizer']} perm="matches.manage"><RefereeHome /></RequireRole>} />
+              <Route path="/organizer" element={<RequireRole perm="tournaments.manage"><OrganizerHome /></RequireRole>} />
+              <Route path="/organizer/new" element={<RequireRole perm="tournaments.manage"><Organizer /></RequireRole>} />
+              <Route path="/me" element={<MeDispatcher />} />
+              {/* Legacy cabinet: compat layer, no longer the center of the app */}
+              <Route path="/cabinet" element={<RequireRole><Cabinet /></RequireRole>} />
               <Route path="/notifications" element={<Notifications />} />
-              <Route path="/admin/users" element={<RequireRole perm="users.view"><UsersDirectory /></RequireRole>} />
               <Route path="/dashboard" element={<Navigate to="/me" replace />} />
               <Route path="/login" element={<Navigate to="/me" replace />} />
               <Route path="/register" element={<Navigate to="/me" replace />} />
@@ -121,8 +88,7 @@ export default function App() {
               <Route path="/admin/*" element={<RequireRole roles={['admin']}><Admin /></RequireRole>} />
               <Route path="*" element={<NotFound />} />
             </Routes>
-          </main>
-          <Footer />
+          </AppShell>
           <CommandMenu open={cmdk} onClose={() => setCmdk(false)} />
           <Toasts />
         </BrowserRouter>
@@ -131,3 +97,4 @@ export default function App() {
     </QueryClientProvider>
   );
 }
+

@@ -22,12 +22,20 @@ async function apiLogin(request: APIRequestContext, email: string, password: str
   return (await r.json()).token as string;
 }
 
-async function uiLogin(page: Page, email: string, password: string) {
+async function uiLogin(page: Page, email: string, password: string, expected: RegExp = /\/(coach|organizer)(\?|$)/) {
   await page.goto('/me');
   await page.getByPlaceholder('Email').fill(email);
   await page.getByPlaceholder('Пароль').fill(password);
   await page.locator('form').first().getByRole('button', { name: 'Войти' }).click();
-  await expect(page.getByText('Мои турниры')).toBeVisible();
+  // Role UX 3.0: /me dispatches to the role home (dual coach+organizer -> organizer).
+  await expect(page).toHaveURL(expected);
+}
+
+async function uiLogout(page: Page) {
+  await page.goto('/me');
+  await page.locator('header').getByRole('button', { name: 'Профиль' }).click();
+  await page.getByRole('button', { name: 'Выйти' }).click();
+  await expect(page.getByPlaceholder('Email')).toBeVisible();
 }
 
 test('coach approved as organizer keeps both roles and both cabinets', async ({ page, request }) => {
@@ -52,22 +60,21 @@ test('coach approved as organizer keeps both roles and both cabinets', async ({ 
   })).json();
   expect(me.role).toBe('coach');
   expect(new Set(me.roles)).toEqual(new Set(['coach', 'organizer']));
-  // trainer cabinet reachable (coach content, no denial)
-  await uiLogin(page, dualEmail, 'secret123');
+  // trainer home reachable (team content, no denial)
+  await uiLogin(page, dualEmail, 'secret123', /\/organizer(\?|$)/);
   await page.goto('/coach');
-  await expect(page.getByText('Мои спортсмены')).toBeVisible();
-  // organizer cabinet reachable (perm-gated, backend enforces)
+  await expect(page.getByText('Мои спортсмены').first()).toBeVisible();
+  // organizer home reachable (pipeline workspace, backend enforces)
   await page.goto('/organizer');
-  await expect(page.getByText('Создание турнира')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Панель организатора' })).toBeVisible();
 });
 
 test('single-role users are denied the other cabinet', async ({ page, request }) => {
-  // organizer-only (seeded) has no trainer cabinet
-  await uiLogin(page, ORG.email, ORG.password);
+  // organizer-only (seeded) has no trainer home
+  await uiLogin(page, ORG.email, ORG.password, /\/organizer(\?|$)/);
   await page.goto('/coach');
   await expect(page.getByText('Нет доступа')).toBeVisible();
-  await page.goto('/me');
-  await page.getByRole('button', { name: 'Выйти' }).click();
+  await uiLogout(page);
   // coach-only has no organizer cabinet
   await (await request.post(`${API}/api/auth/register`, {
     data: { email: soloEmail, password: 'secret123', full_name: 'Solo Coach', role: 'coach' },
@@ -77,31 +84,30 @@ test('single-role users are denied the other cabinet', async ({ page, request })
   await expect(page.getByText('Нет доступа')).toBeVisible();
 });
 
-test('dual cabinet switcher filters views; schedule CRUD works', async ({ page, request }) => {
+test('dual role: separate homes per workspace; schedule CRUD works', async ({ page, request }) => {
   const coachToken = await apiLogin(request, dualEmail, 'secret123');
   await request.post(`${API}/api/clubs`, {
     headers: { Authorization: `Bearer ${coachToken}` },
     data: { name: `Dual Club ${uid}`, country: 'KZ', city: 'A', coach_name: 'Dual' },
   });
 
-  await uiLogin(page, dualEmail, 'secret123');
+  await uiLogin(page, dualEmail, 'secret123', /\/organizer(\?|$)/);
+  // /me dispatches dual users to the organizer home (no mixed cabinet anymore)
   await page.goto('/me');
+  await expect(page).toHaveURL(/\/organizer(\?|$)/);
   const main = page.locator('main');
-  // switcher visible only because both contexts are held
-  const coachTab = page.getByRole('tab', { name: /Тренер/ });
-  const orgTab = page.getByRole('tab', { name: /Организатор/ });
-  await expect(coachTab).toBeVisible();
-  await expect(orgTab).toBeVisible();
-  // organizer view hides trainer blocks, keeps organizer actions
+  // organizer home keeps organizer actions, never trainer blocks
   // (scoped to <main>: the footer always links to /organizer)
-  await orgTab.click();
+  await expect(main.getByText('Мои турниры').first()).toBeVisible();
   await expect(main.getByText('Мои спортсмены')).toHaveCount(0);
-  await expect(main.getByText('Создать турнир')).toBeVisible();
-  // coach view hides organizer actions, keeps trainer blocks + schedule
-  await coachTab.click();
-  await expect(main.getByText('Создать турнир')).toHaveCount(0);
-  await expect(main.getByText('Мои спортсмены')).toBeVisible();
-  await expect(page.getByText('Расписание тренировок')).toBeVisible();
+  // coach home keeps trainer blocks, never organizer creation
+  // (scoped to <main>: the footer always links to /organizer)
+  await page.goto('/coach');
+  await expect(main.getByText('Мои спортсмены').first()).toBeVisible();
+  await expect(main.getByText('Панель организатора')).toHaveCount(0);
+  // schedule lives in its own coach tab now
+  await page.goto('/coach?tab=schedule');
+  await expect(page.getByText('Расписание тренировок').first()).toBeVisible();
   // schedule CRUD in the UI (club scoped to own club)
   const titleInput = page.getByLabel('Название занятия');
   await titleInput.fill('Morning drill');

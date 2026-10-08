@@ -34,7 +34,9 @@ export function LoginForm() {
     try {
       await login(email, password);
       notify(t('me.welcome'), 'ok');
-      nav(from, { replace: true });
+      // Role UX 3.0: always go through the /me dispatcher (it honors `from`
+      // when the fresh role may open it, else lands on the role home).
+      nav('/me', { replace: true, state: { from: from === '/me' ? undefined : from } });
     } catch (e: unknown) {
       const m = `${t('common.err')}: ` + errMsg(e);
       setMsg(m);
@@ -72,7 +74,8 @@ export function RegisterForm() {
       // One request: backend creates the user AND sets the auth cookie.
       await register(form);
       notify(t('me.okReg'), 'ok');
-      nav(from, { replace: true });
+      // Same dispatcher path as login (fresh role decides the home).
+      nav('/me', { replace: true, state: { from: from === '/me' ? undefined : from } });
     } catch (e: unknown) {
       const m = `${t('common.err')}: ` + errMsg(e);
       setMsg(m);

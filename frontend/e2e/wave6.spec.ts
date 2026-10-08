@@ -24,7 +24,7 @@ async function uiLogin(page: Page, email: string, password: string) {
   await page.getByPlaceholder('Email').fill(email);
   await page.getByPlaceholder('Пароль').fill(password);
   await page.locator('form').first().getByRole('button', { name: 'Войти' }).click();
-  await expect(page.getByText('Мои турниры')).toBeVisible();
+  await expect(page).toHaveURL(/\/organizer(\?|$)/);
 }
 
 test('organizer corrects a pending pair, finished stays read-only', async ({ page, request }) => {

@@ -5,9 +5,16 @@ import { errMsg } from '../lib/api';
 import { profileCompleteness, toProfileBody, validateProfileForm } from '../lib/coach';
 import { useAvatar, useMyProfile, useUpdateProfile } from '../lib/queries';
 import { Skeleton } from '../components/ui/core';
-
 /** Unified account avatar: real photo when set, initial fallback otherwise.
  *  Single source — used by both the cabinet profile card and the header. */
+export function AvatarInitial({ name, size = 48 }: { name: string; size?: number }) {
+  return (
+    <span className="grid place-items-center rounded-full font-black flex-none"
+      style={{ background: 'var(--navy)', color: 'var(--bg)', width: size, height: size, fontSize: size * 0.38 }} aria-hidden>
+      {(name || '?').slice(0, 1).toUpperCase()}
+    </span>
+  );
+}
 export function ProfileAvatar({ name, size = 48 }: { name: string; size?: number }) {
   const { user } = useAuth();
   const { data } = useMyProfile(!!user);
@@ -15,12 +22,7 @@ export function ProfileAvatar({ name, size = 48 }: { name: string; size?: number
     return <img src={data.avatar} alt="" width={size} height={size}
       className="rounded-full object-cover flex-none" style={{ width: size, height: size }} />;
   }
-  return (
-    <span className="grid place-items-center rounded-full font-black flex-none"
-      style={{ background: 'var(--navy)', color: 'var(--bg)', width: size, height: size, fontSize: size * 0.38 }} aria-hidden>
-      {(name || '?').slice(0, 1).toUpperCase()}
-    </span>
-  );
+  return <AvatarInitial name={name} size={size} />;
 }
 export function ProfileEditSection() {
   const { t } = useLang();
@@ -85,14 +87,7 @@ export function ProfileEditSection() {
   return (
     <section className="card p-5 space-y-3" aria-label={t('coach2.profile')}>
       <div className="flex items-center gap-3">
-        {p.avatar ? (
-          <img src={p.avatar} alt="" className="w-12 h-12 rounded-full object-cover flex-none" />
-        ) : (
-          <span className="grid place-items-center w-12 h-12 rounded-full font-black text-lg flex-none"
-            style={{ background: 'var(--navy)', color: 'var(--bg)' }} aria-hidden>
-            {(user.full_name || user.email || '?').slice(0, 1).toUpperCase()}
-          </span>
-        )}
+        <ProfileAvatar name={user.full_name || user.email} size={48} />
         <div className="min-w-0 flex-1">
           <div className="font-extrabold leading-tight">{t('coach2.profile')}</div>
           <div className="text-xs" style={{ color: 'var(--muted)' }}>

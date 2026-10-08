@@ -27,7 +27,8 @@ async function uiLogin(page: Page, email: string, password: string) {
   await page.getByPlaceholder('Email').fill(email);
   await page.getByPlaceholder('Пароль').fill(password);
   await page.locator('form').first().getByRole('button', { name: 'Войти' }).click();
-  await expect(page.getByText('Мои турниры')).toBeVisible();
+  // Role UX 3.0: guardian (wards, no backend role) lands on /guardian.
+  await expect(page).toHaveURL(/\/guardian(\?|$)/);
 }
 
 test('guardian sees approved ward read-only, revoke empties cabinet', async ({ page, request }) => {
@@ -59,7 +60,7 @@ test('guardian sees approved ward read-only, revoke empties cabinet', async ({ p
 
   await uiLogin(page, guardEmail, 'secret123');
   // guardian section with auto-selected single ward, read-only regs, docs empty
-  await expect(page.getByText('Мои дети')).toBeVisible();
+  await expect(page.getByText('Мои дети').first()).toBeVisible();
   await expect(page.getByText(`Гош Кид${uid}`).first()).toBeVisible();
   await expect(page.getByText(`G3 Cup ${uid}`).first()).toBeVisible();
   await expect(page.getByText('Нет доступных документов.')).toBeVisible();

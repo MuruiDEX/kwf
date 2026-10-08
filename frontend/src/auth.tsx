@@ -47,6 +47,7 @@ type AuthCtx = {
   role: Role;
   roles: Role[];
   loading: boolean;
+  permsLoading: boolean;
   permissions: string[];
   can: (perm: string) => boolean;
   hasRole: (...rs: Role[]) => boolean;
@@ -56,7 +57,7 @@ type AuthCtx = {
   logout: () => Promise<void>;
 };
 
-const Ctx = createContext<AuthCtx>({ user: null, role: 'public', roles: ['public'], loading: true, permissions: [], can: () => false, hasRole: () => false, refresh: () => {}, login: async () => {}, register: async () => {}, logout: async () => {} });
+const Ctx = createContext<AuthCtx>({ user: null, role: 'public', roles: ['public'], loading: true, permsLoading: false, permissions: [], can: () => false, hasRole: () => false, refresh: () => {}, login: async () => {}, register: async () => {}, logout: async () => {} });
 
 export const useAuth = () => useContext(Ctx);
 
@@ -69,7 +70,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     staleTime: 60_000,
   });
   const user: Me = data ?? null;
-  const { data: permData } = useQuery({
+  const { data: permData, isLoading: permsLoading } = useQuery({
     queryKey: ['my-perms'],
     queryFn: () => api<{ role: string; permissions: string[] }>('/api/auth/permissions'),
     retry: false,
@@ -120,7 +121,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <Ctx.Provider value={{
-      user, role: user?.role ?? 'public', roles, loading: isLoading, permissions, can, hasRole,
+      user, role: user?.role ?? 'public', roles, loading: isLoading, permsLoading: !!user && permsLoading, permissions, can, hasRole,
       refresh: () => { void refetch(); }, login, register, logout,
     }}>
       {children}

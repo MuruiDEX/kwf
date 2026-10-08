@@ -61,3 +61,18 @@ def test_tournament_create_matrix():
         assert client.post("/api/tournaments", json=body, headers=auth_headers(role)).status_code == 403, role
     client.cookies.clear()
     assert client.post("/api/tournaments", json=body).status_code == 401
+
+
+def test_own_organizer_request_read():
+    """GET /api/auth/organizer-request: own latest request or null; admin
+    list stays restricted; anonymous 401."""
+    coach = auth_headers("coach")
+    assert client.get("/api/auth/organizer-request", headers=coach).json() is None
+    r = client.post("/api/auth/request-organizer", json={"org_name": "My Org", "message": "hi"}, headers=coach)
+    assert r.status_code == 200, r.text
+    body = client.get("/api/auth/organizer-request", headers=coach).json()
+    assert body["status"] == "pending" and body["org_name"] == "My Org"
+    assert set(body) == {"id", "org_name", "status", "created_at"}
+    assert client.get("/api/admin/organizer-requests", headers=coach).status_code == 403
+    client.cookies.clear()
+    assert client.get("/api/auth/organizer-request").status_code == 401

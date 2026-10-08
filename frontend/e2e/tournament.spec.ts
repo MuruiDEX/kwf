@@ -6,6 +6,13 @@ import { expect, test, type APIRequestContext, type Page } from '@playwright/tes
 
 const API = 'http://127.0.0.1:8000';
 
+// Infra pacing, NOT a state wait: tournament-discovery's browsing burst shares
+// our per-IP sliding window (120/60s for /api/tournaments, GETs included).
+// Without a gap, status/bracket POSTs trip 429 mid-lifecycle.
+test.beforeAll(async () => {
+  await new Promise((r) => setTimeout(r, 65_000));
+});
+
 async function apiLogin(request: APIRequestContext, email: string, password: string): Promise<string> {
   const r = await request.post(`${API}/api/auth/login`, { data: { email, password } });
   if (!r.ok()) {
@@ -21,7 +28,7 @@ async function uiLogin(page: Page, email: string, password: string) {
   await page.getByPlaceholder('Email').fill(email);
   await page.getByPlaceholder('Пароль').fill(password);
   await page.locator('form').getByRole('button', { name: 'Войти' }).click();
-  await expect(page.getByText('Мои турниры')).toBeVisible();
+  await expect(page).toHaveURL(/\/organizer(\?|$)/);
 }
 
 test('tournament lifecycle in the UI', async ({ page, request }) => {
@@ -30,10 +37,11 @@ test('tournament lifecycle in the UI', async ({ page, request }) => {
   const token = await apiLogin(request, 'organizer@kwf.org', 'organizer123');
   const H = { Authorization: `Bearer ${token}` };
 
-  // 2. create tournament in the wizard
+  // 2. create tournament via the organizer home (create tab)
   await page.goto('/organizer');
+  await page.getByRole('tab', { name: 'Создать турнир' }).click();
   await page.getByPlaceholder('Заголовок').fill('PW Cup');
-  await page.getByRole('button', { name: 'Создать турнир' }).click();
+  await page.getByRole('button', { name: 'Создать турнир', exact: true }).click();
   const openLink = page.getByRole('link', { name: 'Открыть турнир →' });
   await expect(openLink).toBeVisible();
   await openLink.click();
@@ -176,4 +184,12 @@ test('foreign organizer mutation is forbidden (API)', async ({ request }) => {
     data: { name: 'Foreign Cat', gender: 'male' },
   });
   expect(r.status()).toBe(403);
+});
+
+// Infra pacing, NOT a state wait: this file's tournament POST volume shares
+// wave4's per-IP sliding window (120/60s for /api/tournaments). The gap keeps
+// wave4's registration/status burst out of the same window. Production limits
+// and app logic untouched.
+test.afterAll(async () => {
+  await new Promise((r) => setTimeout(r, 65_000));
 });

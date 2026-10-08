@@ -6,6 +6,12 @@ import { expect, test, type Page } from '@playwright/test';
 
 const uid = `smoke${Date.now() % 100000}`;
 
+// Infra pacing (NOT a state wait): athlete-profile's auth burst shares our
+// per-IP sliding window (10 login POSTs/60s). Same convention as multirole.
+test.beforeAll(async () => {
+  await new Promise((r) => setTimeout(r, 65_000));
+});
+
 type Noise = { pageErrors: string[]; consoleErrors: string[]; badResponses: string[]; failedReqs: string[] };
 
 async function watch(page: Page): Promise<{ noise: Noise; loginCalls: string[] }> {
@@ -48,15 +54,32 @@ async function registerUI(page: Page, email: string, name = 'Smoke User') {
   await page.getByPlaceholder('Email').fill(email);
   await page.getByPlaceholder('Пароль').fill('secret123');
   await page.locator('form').getByRole('button', { name: 'Создать аккаунт' }).click();
+  // wait for auto-login + /me dispatch before navigating away (else the
+  // register POST can be aborted by the next goto and the session is lost)
+  await expect(page).toHaveURL(/\/(athlete|coach|referee)(\?|$)/);
+}
+
+// Role UX 3.0: /me dispatches to the role home (athlete by default here).
+async function expectAthleteHome(page: Page, email: string) {
+  await expect(page).toHaveURL(/\/athlete(\?|$)/);
+  await expect(page.locator('main').getByText('Мои турниры').first()).toBeVisible();
+  await expect(page.getByText(email)).toBeVisible();
+}
+
+async function uiLogout(page: Page) {
+  // Logout lives in the header account menu (role homes have no inline logout).
+  await page.goto('/me');
+  await page.locator('header').getByRole('button', { name: 'Профиль' }).click();
+  await page.getByRole('button', { name: 'Выйти' }).click();
+  await expect(page.getByPlaceholder('Email')).toBeVisible();
 }
 
 test('register -> auto-login -> cabinet (no second login call, cookie set)', async ({ page, context }) => {
   const { noise, loginCalls } = await watch(page);
   const email = `${uid}a@kwf.org`;
   await registerUI(page, email);
-  // Cabinet visible without touching the Login tab
-  await expect(page.getByText('Мои турниры')).toBeVisible();
-  await expect(page.getByText(email)).toBeVisible();
+  // Role home visible without touching the Login tab
+  await expectAthleteHome(page, email);
   // no second /login request happened
   expect(loginCalls).toEqual([]);
   // HttpOnly cookie present
@@ -69,12 +92,10 @@ test('refresh keeps session, logout drops it (incl. after F5)', async ({ page })
   await watch(page);
   const email = `${uid}b@kwf.org`;
   await registerUI(page, email);
-  await expect(page.getByText('Мои турниры')).toBeVisible();
+  await expectAthleteHome(page, email);
   await page.reload();
-  await expect(page.getByText('Мои турниры')).toBeVisible();
-  await expect(page.getByText(email)).toBeVisible();
-  await page.getByRole('button', { name: 'Выйти' }).click();
-  await expect(page.getByPlaceholder('Email')).toBeVisible();
+  await expectAthleteHome(page, email);
+  await uiLogout(page);
   await page.reload();
   await expect(page.getByPlaceholder('Email')).toBeVisible();
   await expect(page.getByText('Мои турниры')).toHaveCount(0);
@@ -84,26 +105,25 @@ test('login -> cabinet -> refresh; protected page returns after login', async ({
   await watch(page);
   const email = `${uid}c@kwf.org`;
   await registerUI(page, email);
-  await page.getByRole('button', { name: 'Выйти' }).click();
-  await expect(page.getByPlaceholder('Email')).toBeVisible();
+  await uiLogout(page);
   // guest hits protected page -> bounced to /me
   await page.goto('/organizer');
   await expect(page).toHaveURL(/\/me$/);
   await expect(page.getByPlaceholder('Email')).toBeVisible();
-  // login -> back to the original page (no loop; athlete sees role-hint there)
+  // login -> athlete cannot open /organizer, lands on the role home (no loop)
   await page.getByPlaceholder('Email').fill(email);
   await page.getByPlaceholder('Пароль').fill('secret123');
   await page.locator('form').getByRole('button', { name: 'Войти' }).click();
-  await expect(page).toHaveURL(/\/organizer$/);
+  await expect(page).toHaveURL(/\/athlete(\?|$)/);
   await page.reload();
-  await expect(page).toHaveURL(/\/organizer$/);
+  await expect(page).toHaveURL(/\/athlete(\?|$)/);
 });
 
 test('wrong password: clear error, form stays usable', async ({ page }) => {
   const { noise } = await watch(page);
   const email = `${uid}d@kwf.org`;
   await registerUI(page, email);
-  await page.getByRole('button', { name: 'Выйти' }).click();
+  await uiLogout(page);
   await page.getByPlaceholder('Email').fill(email);
   await page.getByPlaceholder('Пароль').fill('wrong-pass');
   const btn = page.locator('form').getByRole('button', { name: 'Войти' });
@@ -113,7 +133,7 @@ test('wrong password: clear error, form stays usable', async ({ page }) => {
   // retry with correct password works
   await page.getByPlaceholder('Пароль').fill('secret123');
   await btn.click();
-  await expect(page.getByText('Мои турниры')).toBeVisible();
+  await expect(page).toHaveURL(/\/athlete(\?|$)/);
   expectClean(noise);
 });
 
@@ -121,8 +141,8 @@ test('duplicate registration: 400, app stays alive', async ({ page }) => {
   const { noise } = await watch(page);
   const email = `${uid}e@kwf.org`;
   await registerUI(page, email);
-  await expect(page.getByText('Мои турниры')).toBeVisible();
-  await page.getByRole('button', { name: 'Выйти' }).click();
+  await expect(page).toHaveURL(/\/athlete(\?|$)/);
+  await uiLogout(page);
   await page.goto('/me');
   await page.getByRole('button', { name: 'Регистрация' }).click();
   await page.getByPlaceholder('Имя').fill('Dupe');
@@ -141,7 +161,7 @@ test('mobile 390px: no horizontal overflow on key pages', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const email = `${uid}m@kwf.org`;
   await registerUI(page, email);
-  await expect(page.getByText('Мои турниры')).toBeVisible();
+  await expect(page).toHaveURL(/\/athlete(\?|$)/);
   for (const url of ['/me', '/tournaments', '/rankings', '/athletes', '/news']) {
     await page.goto(url);
     await page.waitForLoadState('networkidle');

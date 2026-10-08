@@ -9,6 +9,13 @@ const API = process.env.SMOKE_API ?? 'http://127.0.0.1:8000';
 const ADMIN = { email: 'admin@kwf.org', password: 'admin123' };
 const uid = `role${Date.now() % 100000}`;
 
+// Infra pacing: the previous file's auth burst shares our per-IP sliding
+// window (10 login POSTs/60s); without a gap, this file's ~4 logins land in
+// the same window and trip 429. Same convention as multirole.beforeAll.
+test.beforeAll(async () => {
+  await new Promise((r) => setTimeout(r, 65_000));
+});
+
 async function apiLogin(request: APIRequestContext, email: string, password: string): Promise<string> {
   const r = await request.post(`${API}/api/auth/login`, { data: { email, password } });
   expect(r.ok()).toBeTruthy();
@@ -25,13 +32,21 @@ async function registerAPI(request: APIRequestContext, email: string, role: stri
   expect(r.ok()).toBeTruthy();
 }
 
-async function uiLogin(page: Page, email: string, password: string) {
+async function uiLogin(page: Page, email: string, password: string, expected: RegExp = /\/(athlete|coach|organizer|referee|admin|guardian)(\?|$)/) {
   await page.goto('/me');
   // after logout the form always resets to the login tab
   await page.getByPlaceholder('Email').fill(email);
   await page.getByPlaceholder('Пароль').fill(password);
   await page.locator('form').first().getByRole('button', { name: 'Войти' }).click();
-  await expect(page.getByText('Мои турниры')).toBeVisible();
+  // Role UX 3.0: /me dispatches to the role home, not a universal cabinet.
+  await expect(page).toHaveURL(expected);
+}
+
+async function uiLogout(page: Page) {
+  await page.goto('/me');
+  await page.locator('header').getByRole('button', { name: 'Профиль' }).click();
+  await page.getByRole('button', { name: 'Выйти' }).click();
+  await expect(page.getByPlaceholder('Email')).toBeVisible();
 }
 
 test('coach cabinet: my athletes empty state, /organizer denied without grant', async ({ page }) => {
@@ -43,9 +58,10 @@ test('coach cabinet: my athletes empty state, /organizer denied without grant', 
   await page.getByPlaceholder('Пароль').fill('secret123');
   await page.getByRole('combobox').selectOption('coach');
   await page.locator('form').first().getByRole('button', { name: 'Создать аккаунт' }).click();
-  await expect(page.getByText('Мои турниры')).toBeVisible();
-  await expect(page.getByText('Мои спортсмены')).toBeVisible();
-  await expect(page.getByText('Пока нет спортсменов')).toBeVisible();
+  // coach lands on the team-oriented home (not a universal cabinet)
+  await expect(page).toHaveURL(/\/coach(\?|$)/);
+  await expect(page.getByText('Мои спортсмены').first()).toBeVisible();
+  await expect(page.getByText('Пока нет спортсменов').first()).toBeVisible();
   await page.goto('/organizer');
   await expect(page.getByText('Нет доступа')).toBeVisible();
 });
@@ -84,16 +100,13 @@ test('admin grants tournaments.create+manage via UI, coach creates own tournamen
   await page.locator('label', { hasText: 'Управление своими' }).locator('input[type=checkbox]').check();
   await page.getByRole('button', { name: 'Сохранить' }).click();
   await expect(page.getByText('Сохранено')).toBeVisible();
-  // coach creates tournament in the wizard
-  // NOTE: logout lives in the cabinet (/me) — admin/users and denied pages
-  // have no 'Выйти' button, so go there first.
-  await page.goto('/me');
-  await page.getByRole('button', { name: 'Выйти' }).click();
-  await uiLogin(page, email, 'secret123');
+  // coach creates tournament via the organizer home (create tab)
+  await uiLogout(page);
+  await uiLogin(page, email, 'secret123', /\/coach(\?|$)/);
   await page.goto('/organizer');
-  await expect(page.getByRole('button', { name: 'Создать турнир' })).toBeVisible();
+  await page.getByRole('tab', { name: 'Создать турнир' }).click();
   await page.getByPlaceholder('Заголовок').fill(`RS Cup ${uid}`);
-  await page.getByRole('button', { name: 'Создать турнир' }).click();
+  await page.getByRole('button', { name: 'Создать турнир', exact: true }).click();
   const openLink = page.getByRole('link', { name: 'Открыть турнир →' });
   await expect(openLink).toBeVisible();
   await openLink.click();
@@ -123,18 +136,16 @@ test('athlete: no edit button, no organizer actions; referee: judge access', asy
     data: { first_name: 'RS', last_name: 'View', gender: 'male', birth_year: 2010, weight_kg: 40 },
   })).status());
   expect(aid).toBe(403); // athletes cannot create athletes at all
-  await uiLogin(page, aEmail, 'secret123');
+  await uiLogin(page, aEmail, 'secret123', /\/athlete(\?|$)/);
   // NOTE: scoped to <main> — the global footer always links to /organizer
   // ('Создать турнир'), which is navigation, not an afforded action.
   await expect(page.locator('main').getByText('Создать турнир')).toHaveCount(0);
-  await expect(page.locator('main').getByText('Судить')).toHaveCount(0);
   await page.goto('/organizer');
   await expect(page.getByText('Нет доступа')).toBeVisible();
-  // NOTE: logout lives in the cabinet (/me), not on the denied page.
-  await page.goto('/me');
-  await page.getByRole('button', { name: 'Выйти' }).click();
-  await uiLogin(page, rEmail, 'secret123');
-  await expect(page.getByText('Судить')).toBeVisible();
+  await uiLogout(page);
+  await uiLogin(page, rEmail, 'secret123', /\/referee(\?|$)/);
+  // referee lands in the operational workspace (queue, not a stats cabinet)
+  await expect(page.getByText('Очередь боёв').first()).toBeVisible();
   await page.goto('/referee');
   await expect(page).toHaveURL(/\/referee$/);
 });

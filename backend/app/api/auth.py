@@ -116,6 +116,16 @@ def request_organizer(data: OrgRequestIn, request: Request, db: Session = Depend
     db.refresh(r)
     return {"ok": True, "id": r.id}
 
+@router.get("/organizer-request")
+def my_organizer_request(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """Latest own organizer request (or null). Read-only self view for the
+    account role menu; decision authority stays admin-only."""
+    r = db.query(OrganizerRequest).filter_by(user_id=user.id).order_by(OrganizerRequest.id.desc()).first()
+    if not r:
+        return None
+    return {"id": r.id, "org_name": r.org_name, "status": r.status,
+            "created_at": str(r.created_at) if r.created_at else None}
+
 
 def _self_profile(db: Session, user: User):
     """Get-or-create the caller's own profile row (never for other users)."""

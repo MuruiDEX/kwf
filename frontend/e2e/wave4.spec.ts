@@ -34,12 +34,13 @@ async function registerAPI(request: APIRequestContext, email: string, role: stri
   expect(r.ok()).toBeTruthy();
 }
 
-async function uiLogin(page: Page, email: string, password: string) {
+async function uiLogin(page: Page, email: string, password: string, expected: RegExp = /\/(athlete|coach|organizer)(\?|$)/) {
   await page.goto('/me');
   await page.getByPlaceholder('Email').fill(email);
   await page.getByPlaceholder('Пароль').fill(password);
   await page.locator('form').first().getByRole('button', { name: 'Войти' }).click();
-  await expect(page.getByText('Мои турниры')).toBeVisible();
+  // Role UX 3.0: /me dispatches to the role home.
+  await expect(page).toHaveURL(expected);
 }
 
 async function mkTournament(request: APIRequestContext, headers: Record<string, string>, name: string) {
@@ -72,9 +73,10 @@ test('athlete claims profile, applies, sees status, withdraws', async ({ page, r
   await expect(page.getByText('Подходит').first()).toBeVisible();
   await page.getByRole('button', { name: 'Подать заявку' }).first().click();
   await expect(page.getByText('Принята').first()).toBeVisible({ timeout: 15000 });
-  // withdraw from the cabinet
+  // withdraw from the athlete home
   await page.goto('/me');
-  await expect(page.getByText('Мои заявки')).toBeVisible();
+  await expect(page).toHaveURL(/\/athlete(\?|$)/);
+  await expect(page.getByText('Мои заявки').first()).toBeVisible();
   await page.getByRole('button', { name: 'Отозвать' }).first().click();
   await expect(page.getByText('Отозвана').first()).toBeVisible({ timeout: 15000 });
 });
@@ -94,7 +96,9 @@ test('coach bulk-registers own athletes in one go', async ({ page, request }) =>
   const orgToken = await apiLogin(request, ORG.email, ORG.password);
   const { tid } = await mkTournament(request, { Authorization: `Bearer ${orgToken}` }, `W4 Cup ${uid}c`);
 
-  await uiLogin(page, coachEmail, 'secret123');
+  await uiLogin(page, coachEmail, 'secret123', /\/coach(\?|$)/);
+  // bulk registration lives in the Registrations tab of the coach home
+  await page.goto('/coach?tab=regs');
   const section = page.getByRole('region', { name: 'Заявка на турнир' });
   await expect(section).toBeVisible();
   await section.getByLabel('Турнир').selectOption(String(tid));

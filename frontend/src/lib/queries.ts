@@ -41,6 +41,7 @@ export const qk = {
   notes: ['notes'] as const,
   audit: ['audit'] as const,
   orgreq: ['orgreq'] as const,
+  myorgreq: ['myorgreq'] as const,
   adminUsers: (q = '', role = '') =>
     q || role ? (['admin-users', q, role] as const) : (['admin-users'] as const),
   verify: (submitted: string, nonce: number) => ['verify', submitted, nonce] as const,
@@ -196,6 +197,16 @@ export function useAudit() {
 }
 export function useOrgRequests() {
   return useQuery<Paged<OrganizerRequest>>({ queryKey: qk.orgreq, queryFn: () => api('/api/admin/organizer-requests'), retry: false });
+}
+export interface MyOrgRequest {
+  id: number;
+  org_name: string;
+  status: string;
+  created_at: string | null;
+}
+/** Own latest organizer request (or null). Powers the account role menu. */
+export function useMyOrgRequest(enabled = true) {
+  return useQuery<MyOrgRequest | null>({ queryKey: qk.myorgreq, queryFn: () => api('/api/auth/organizer-request'), retry: false, enabled });
 }
 export function useAdminUsers(q = '', role = '') {
   return useQuery<Paged<AdminUser>>({ queryKey: qk.adminUsers(q, role), queryFn: () => api(`/api/admin/users?q=${encodeURIComponent(q)}&role=${role}`), retry: false });

@@ -13,7 +13,7 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
   const { t } = useLang();
   const [q, setQ] = useState('');
   const [res, setRes] = useState<SearchResult | null>(null);
-  const { hasRole, can } = useAuth();
+  const { hasRole, can, roles } = useAuth();
   const [idx, setIdx] = useState(0);
   const nav = useNavigate();
   const qc = useQueryClient();
@@ -54,6 +54,10 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
       { id: 'live', label: t('c.openLive'), hint: t('c.nav'), run: () => go('/live') },
       { id: 'news', label: t('c.news'), hint: t('c.nav'), run: () => go('/news') },
       { id: 'verify', label: t('c.verify'), hint: t('c.nav'), run: () => go('/verify') },
+      // Role homes (same source of truth as navigation.ts ROLE_HOME).
+      ...(roles.includes('athlete') ? [{ id: 'ath-home', label: t('ath.dash'), hint: t('c.nav'), run: () => go('/athlete') } as Action] : []),
+      ...(roles.includes('coach') ? [{ id: 'coach-home', label: t('coach2.dash'), hint: t('c.nav'), run: () => go('/coach') } as Action] : []),
+      ...(roles.includes('organizer') || can('tournaments.manage') ? [{ id: 'org-home', label: t('org.dash'), hint: t('c.nav'), run: () => go('/organizer') } as Action] : []),
       { id: 'referee', label: t('c.referee'), hint: t('c.nav'), run: () => go('/referee'), roles: ['referee', 'organizer', 'admin'], perm: 'matches.manage' },
       { id: 'create', label: t('c.create'), hint: t('c.org'), run: () => go('/organizer'), roles: ['organizer', 'admin'], perm: 'tournaments.manage' },
     ];
@@ -75,7 +79,7 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
     const visible = (a: Action) =>
       (!a.roles || hasRole(...a.roles) || hasRole('admin') || (a.perm !== undefined && can(a.perm)));
     return list.filter(a => visible(a) && (!needle || a.label.toLowerCase().includes(needle)));
-  }, [q, tid, t, can, hasRole]);
+  }, [q, tid, t, can, hasRole, roles]);
 
   if (!open) return null;
   const onKey = (e: React.KeyboardEvent) => {
